@@ -91,10 +91,8 @@ export const ROLES = {
   Assassin: {
     faction: FACTIONS.NEUTRAL,
     team: "assassin",
-    description: "You have a personal target. Win only if your own assassination kills that target.",
-    ability: "assassinate",
-    priority: 29,
-    charges: 1
+    description: "You have a personal target. Win if that target is voted out while you are alive.",
+    ability: null
   },
   Survivor: {
     faction: FACTIONS.NEUTRAL,
@@ -106,23 +104,38 @@ export const ROLES = {
   }
 };
 
-export function buildRoleDeck(size) {
-  const base = [
-    "Investigator",
-    "Medic",
-    "Tracker",
-    "Vigilante",
-    "Mayor",
-    "Boss",
-    "Enforcer",
-    "Cleaner",
-    "Deceiver",
-    "Jester",
-    "Assassin",
-    "Survivor"
+const townPowerRoles = ["Investigator", "Medic", "Tracker", "Guardian", "Vigilante", "Mayor"];
+const syndicateRoles = ["Boss", "Enforcer", "Cleaner", "Deceiver"];
+const neutralRoles = ["Jester", "Assassin", "Survivor"];
+
+export function defaultRoleSettings(size) {
+  const syndicateCount = Math.max(1, Math.min(4, Math.floor(size / 4)));
+  const neutralCount = size >= 8 ? 1 : 0;
+  const townPowerCount = Math.max(1, Math.min(size - syndicateCount - neutralCount - 1, Math.round(size / 3)));
+  return { syndicateCount, neutralCount, townPowerCount };
+}
+
+export function buildRoleDeck(size, roleSettings = {}) {
+  const defaults = defaultRoleSettings(size);
+  const settings = {
+    syndicateCount: clampCount(roleSettings.syndicateCount ?? defaults.syndicateCount, 1, Math.max(1, Math.floor((size - 1) / 2))),
+    neutralCount: clampCount(roleSettings.neutralCount ?? defaults.neutralCount, 0, Math.max(0, size - 3)),
+    townPowerCount: clampCount(roleSettings.townPowerCount ?? defaults.townPowerCount, 0, Math.max(0, size - 2))
+  };
+
+  while (settings.syndicateCount + settings.neutralCount + settings.townPowerCount > size) {
+    if (settings.neutralCount > 0) settings.neutralCount -= 1;
+    else if (settings.townPowerCount > 0) settings.townPowerCount -= 1;
+    else settings.syndicateCount -= 1;
+  }
+
+  const deck = [
+    ...takeRoles(syndicateRoles, settings.syndicateCount),
+    ...takeRoles(neutralRoles, settings.neutralCount),
+    ...takeRoles(townPowerRoles, settings.townPowerCount)
   ];
-  while (base.length < size) base.splice(1 + Math.floor(Math.random() * 4), 0, "Citizen");
-  return shuffle(base).slice(0, size);
+  while (deck.length < size) deck.push("Citizen");
+  return shuffle(deck).slice(0, size);
 }
 
 export function visibleRole(player) {
@@ -138,4 +151,22 @@ export function shuffle(items) {
     [copy[i], copy[j]] = [copy[j], copy[i]];
   }
   return copy;
+}
+
+function takeRoles(pool, count) {
+  const result = [];
+  let cycle = shuffle(pool);
+  for (let i = 0; i < count; i += 1) {
+    if (!cycle.length) cycle = shuffle(pool);
+    result.push(cycle.shift());
+  }
+  if (result.includes("Enforcer") && !result.includes("Boss")) result[0] = "Boss";
+  if (pool.includes("Boss") && count === 1) result[0] = "Boss";
+  return result;
+}
+
+function clampCount(value, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return min;
+  return Math.max(min, Math.min(max, Math.round(number)));
 }

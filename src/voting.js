@@ -36,6 +36,8 @@ export function resolveVotes(game, humanVote) {
 
   const eliminated = game.byId(targetId);
   kill(game, eliminated);
+  const assassin = game.players.find((p) => p.role === "Assassin" && p.alive);
+  if (assassin?.target === eliminated.id) assassin.assassinSuccess = true;
   game.history.push(`${eliminated.name} was eliminated by vote. ${eliminated.cleaned ? "Their role was hidden." : `They were the ${eliminated.role}.`}`);
   return {
     eliminated,

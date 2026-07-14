@@ -7,7 +7,7 @@ import { resolveVotes } from "./voting.js";
 export class GameEngine {
   constructor(settings = {}) {
     this.settings = { playerCount: 13, dayLength: 75, ...settings };
-    this.players = createPlayers(this.settings.playerCount);
+    this.players = createPlayers(this.settings.playerCount, this.settings);
     initializeRelationships(this.players);
     this.human = this.players[0];
     this.phase = "reveal";
@@ -69,6 +69,11 @@ export class GameEngine {
     const context = ingestPlayerMessage(this, text.trim());
     const replies = generateDiscussion(this, 4, context);
     replies.forEach((r) => this.addMessage(r.speaker, r.text));
+  }
+
+  aiTableTalk() {
+    if (this.phase !== "day" || this.winner) return;
+    generateDiscussion(this, 2).forEach((r) => this.addMessage(r.speaker, r.text));
   }
 
   resolveNightWith(playerAction) {
@@ -155,7 +160,7 @@ export class GameEngine {
     if (jester?.dead && this.history.at(-1)?.includes(`${jester.name} was eliminated by vote`)) {
       this.winner = { faction: "Jester", text: `${jester.name} wins by getting voted out.` };
     } else if (assassin?.alive && assassin.assassinSuccess) {
-      this.winner = { faction: "Assassin", text: `${assassin.name} wins by personally assassinating their target.` };
+      this.winner = { faction: "Assassin", text: `${assassin.name} wins because their target was voted out.` };
     } else if (syndicate.length >= nonSyndicate.length && syndicate.length > 0) {
       this.winner = { faction: "Syndicate", text: "The Syndicate controls the vote and takes the town." };
     } else if (syndicate.length === 0) {

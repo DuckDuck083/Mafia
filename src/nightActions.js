@@ -35,14 +35,14 @@ export function resolveNight(game, actions) {
     const target = game.byId(act.targetId);
     if (!actor?.alive || !target?.alive) continue;
     visits.set(actor.id, target.id);
-    if (Number.isFinite(actor.charges) && ["shoot", "clean", "assassinate", "vest"].includes(act.type)) actor.charges -= 1;
+    if (Number.isFinite(actor.charges) && ["shoot", "clean", "vest"].includes(act.type)) actor.charges -= 1;
 
     if (act.type === "protect") target.protected = true;
     if (act.type === "guard") target.guardedBy = actor.id;
     if (act.type === "vest") target.vested = true;
     if (act.type === "frame") target.framed = true;
     if (act.type === "clean") cleanedTargets.add(target.id);
-    if (["kill", "shoot", "assassinate"].includes(act.type)) attacks.push(act);
+    if (["kill", "shoot"].includes(act.type)) attacks.push(act);
     if (act.type === "investigate") {
       const suspicious = target.framed || (target.team === "syndicate" && target.role !== "Boss");
       const clue = target.role === "Boss" ? `${target.name} appears organized but not openly criminal.` : `${target.name} reads as ${suspicious ? "suspicious" : "not suspicious"}.`;
@@ -78,9 +78,6 @@ export function resolveNight(game, actions) {
       continue;
     }
     kill(game, target, attack.type === "shoot" ? actor : null);
-    if (attack.type === "assassinate" && actor.role === "Assassin" && actor.target === target.id) {
-      actor.assassinSuccess = true;
-    }
     if (cleanedTargets.has(target.id)) target.cleaned = true;
     dead.push(target);
   }

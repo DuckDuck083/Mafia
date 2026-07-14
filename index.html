@@ -104,10 +104,8 @@ const ROLES = {
   Assassin: {
     faction: FACTIONS.NEUTRAL,
     team: "assassin",
-    description: "You have a personal target. Win only if your own assassination kills that target.",
-    ability: "assassinate",
-    priority: 29,
-    charges: 1
+    description: "You have a personal target. Win if that target is voted out while you are alive.",
+    ability: null
   },
   Survivor: {
     faction: FACTIONS.NEUTRAL,
@@ -119,23 +117,38 @@ const ROLES = {
   }
 };
 
-function buildRoleDeck(size) {
-  const base = [
-    "Investigator",
-    "Medic",
-    "Tracker",
-    "Vigilante",
-    "Mayor",
-    "Boss",
-    "Enforcer",
-    "Cleaner",
-    "Deceiver",
-    "Jester",
-    "Assassin",
-    "Survivor"
+const townPowerRoles = ["Investigator", "Medic", "Tracker", "Guardian", "Vigilante", "Mayor"];
+const syndicateRoles = ["Boss", "Enforcer", "Cleaner", "Deceiver"];
+const neutralRoles = ["Jester", "Assassin", "Survivor"];
+
+function defaultRoleSettings(size) {
+  const syndicateCount = Math.max(1, Math.min(4, Math.floor(size / 4)));
+  const neutralCount = size >= 8 ? 1 : 0;
+  const townPowerCount = Math.max(1, Math.min(size - syndicateCount - neutralCount - 1, Math.round(size / 3)));
+  return { syndicateCount, neutralCount, townPowerCount };
+}
+
+function buildRoleDeck(size, roleSettings = {}) {
+  const defaults = defaultRoleSettings(size);
+  const settings = {
+    syndicateCount: clampCount(roleSettings.syndicateCount ?? defaults.syndicateCount, 1, Math.max(1, Math.floor((size - 1) / 2))),
+    neutralCount: clampCount(roleSettings.neutralCount ?? defaults.neutralCount, 0, Math.max(0, size - 3)),
+    townPowerCount: clampCount(roleSettings.townPowerCount ?? defaults.townPowerCount, 0, Math.max(0, size - 2))
+  };
+
+  while (settings.syndicateCount + settings.neutralCount + settings.townPowerCount > size) {
+    if (settings.neutralCount > 0) settings.neutralCount -= 1;
+    else if (settings.townPowerCount > 0) settings.townPowerCount -= 1;
+    else settings.syndicateCount -= 1;
+  }
+
+  const deck = [
+    ...takeRoles(syndicateRoles, settings.syndicateCount),
+    ...takeRoles(neutralRoles, settings.neutralCount),
+    ...takeRoles(townPowerRoles, settings.townPowerCount)
   ];
-  while (base.length < size) base.splice(1 + Math.floor(Math.random() * 4), 0, "Citizen");
-  return shuffle(base).slice(0, size);
+  while (deck.length < size) deck.push("Citizen");
+  return shuffle(deck).slice(0, size);
 }
 
 function visibleRole(player) {
@@ -151,6 +164,24 @@ function shuffle(items) {
     [copy[i], copy[j]] = [copy[j], copy[i]];
   }
   return copy;
+}
+
+function takeRoles(pool, count) {
+  const result = [];
+  let cycle = shuffle(pool);
+  for (let i = 0; i < count; i += 1) {
+    if (!cycle.length) cycle = shuffle(pool);
+    result.push(cycle.shift());
+  }
+  if (result.includes("Enforcer") && !result.includes("Boss")) result[0] = "Boss";
+  if (pool.includes("Boss") && count === 1) result[0] = "Boss";
+  return result;
+}
+
+function clampCount(value, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return min;
+  return Math.max(min, Math.min(max, Math.round(number)));
 }
 
 
@@ -174,8 +205,8 @@ const personalities = [
 
 const colors = ["#e7b85a", "#64a9ff", "#62c98b", "#df5f65", "#b18cff", "#7dd3c7", "#f29b76", "#c6d36e"];
 
-function createPlayers(count) {
-  const deck = buildRoleDeck(count);
+function createPlayers(count, roleSettings = {}) {
+  const deck = buildRoleDeck(count, roleSettings);
   const pool = [...names].sort(() => Math.random() - 0.5);
   return deck.map((role, index) => {
     const isHuman = index === 0;
@@ -301,23 +332,29 @@ function aiNightAction(game, actor) {
   if (actor.ability === "kill") return action(actor, syndicateKillTarget, "kill");
   if (actor.ability === "clean" && actor.charges > 0) return action(actor, syndicateKillTarget, "clean");
   if (actor.ability === "frame") return action(actor, mostTrusted(actor, enemies), "frame");
-  if (actor.ability === "assassinate" && actor.charges > 0) {
-    const target = game.byId(actor.target);
-    if (target?.alive && (game.day > 2 || actor.suspicion[target.id] > 58)) return action(actor, target, "assassinate");
-  }
   if (actor.ability === "vest" && actor.charges > 0 && averageSuspicionOf(game, actor) > 44) return action(actor, actor, "vest");
   return null;
 }
 
 function generateDiscussion(game, count = 5, context = null) {
   let speakers = game.living().filter((p) => !p.isHuman);
+  if (!context) {
+    const target = tableSuspect(game);
+    context = { tableTopic: true, target, kind: "case" };
+    const caseMaker = speakers.filter((p) => p.id !== target?.id).sort((a, b) => (b.suspicion[target?.id] ?? 0) - (a.suspicion[target?.id] ?? 0))[0];
+    speakers = [
+      caseMaker,
+      target,
+      ...speakers.filter((p) => p.id !== caseMaker?.id && p.id !== target?.id)
+    ].filter(Boolean);
+  }
   if (context?.mentioned?.length) {
     const mentionedIds = new Set(context.mentioned.map((p) => p.id));
     speakers = [
       ...speakers.filter((p) => mentionedIds.has(p.id)),
       ...speakers.filter((p) => !mentionedIds.has(p.id))
     ];
-  } else {
+  } else if (!context?.tableTopic) {
     speakers = speakers.sort(() => Math.random() - 0.5);
   }
   const results = [];
@@ -370,6 +407,10 @@ function generateSyndicateDiscussion(game, context = null) {
 function chooseVote(game, voter) {
   if (!voter.alive) return null;
   if (voter.isHuman) return null;
+  if (isEarlyDay(game) && Math.random() < 0.45) {
+    const pool = game.living().filter((p) => p.id !== voter.id);
+    return pool[Math.floor(Math.random() * pool.length)]?.id ?? null;
+  }
   if (voter.role === "Jester") {
     const loudest = game.living().filter((p) => p.id !== voter.id).sort((a, b) => (voter.trust[b.id] ?? 0) - (voter.trust[a.id] ?? 0))[0];
     return loudest?.id ?? null;
@@ -402,6 +443,9 @@ function speak(game, speaker, context = null) {
   if (context?.fromBot) {
     const reply = respondToBot(game, speaker, context);
     if (reply) return stylize(speaker, reply);
+  }
+  if (context?.tableTopic && context.target) {
+    return stylize(speaker, makeCase(game, speaker, context.target));
   }
 
   const living = game.living().filter((p) => p.id !== speaker.id);
@@ -441,6 +485,13 @@ function speak(game, speaker, context = null) {
     `Can ${target.name} explain their vote again? I did not like that.`,
     `I am not ready to hard push it, but ${target.name} is not sitting right with me.`
   ]));
+  if (isEarlyDay(game)) {
+    return stylize(speaker, pick([
+      `I want to hear more from ${target.name} before I vote there.`,
+      `${target.name}, give us two suspects and one person you trust.`,
+      `I am not voting off vibes yet, but ${target.name} has been too quiet.`
+    ]));
+  }
   return stylize(speaker, pick([
     `I want to hear more from ${target.name}.`,
     `${target.name}, who are your top two suspects?`,
@@ -449,21 +500,63 @@ function speak(game, speaker, context = null) {
   ]));
 }
 
+function makeCase(game, speaker, target) {
+  if (target.id === speaker.id) {
+    return pick([
+      `I will answer it. I do not have hard info yet, but I can give reads if people want them.`,
+      `I am here. If the issue is that I have been quiet, ask me something specific.`,
+      `I get why my slot is easy to question, but there is not an actual catch on me yet.`
+    ]);
+  }
+  const reason = evidenceFor(game, speaker, target);
+  if (isEarlyDay(game) && !hasHardEvidence(game, target)) {
+    return pick([
+      `I do not want to hammer ${target.name} on Day 1. I just want them to give real reads.`,
+      `${target.name}, talk more. Who do you trust and who feels fake?`,
+      `I am not voting ${target.name} off nothing, but they need to stop sitting back.`
+    ]);
+  }
+  const question = pick([
+    `${target.name}, explain that.`,
+    `${target.name}, who are you actually voting today?`,
+    `${target.name}, give us your full read list.`
+  ]);
+  return pick([
+    `I want pressure on ${target.name}. ${reason} ${question}`,
+    `${target.name} is the vote I am looking at because ${lowerFirst(reason)}`,
+    `Can we stop ignoring ${target.name}? ${reason}`
+  ]);
+}
+
 function respondToBot(game, speaker, context) {
   const target = context.target;
   if (!target || target.dead || target.id === speaker.id) {
     const accuser = context.speaker;
     if (target?.id === speaker.id) {
+      if (isEarlyDay(game)) {
+        return pick([
+          `I can answer. There has not even been a vote yet, so ask me for reads instead of calling it a case.`,
+          `I am not hiding. I just do not have hard info yet.`,
+          `If the problem is that I am quiet, fine. My current lean is that the loud pushers need scrutiny too.`
+        ]);
+      }
       return pick([
-        `That is not fair. The actual reason people suspect me is just one bad vote, not a real catch.`,
-        `You are leaving out that I pushed early yesterday. That does not make sense as Syndicate.`,
-        `If you think I am evil, say what team I am with and who my partner is.`
+        `That is not a real case on me. My last vote was explainable, and nobody countered it at the time.`,
+        `You are skipping context. I pushed before the vote, I did not just appear at the end.`,
+        `If you think I am Syndicate, name a partner. Otherwise this is just an easy push.`
       ]);
     }
     return null;
   }
   const mySuspicion = speaker.suspicion[target.id] ?? 30;
   const accuser = context.speaker;
+  if (isEarlyDay(game) && !hasHardEvidence(game, target)) {
+    return pick([
+      `I agree they should talk, but I am not voting ${target.name} just for being quiet.`,
+      `Pressure is fine. Voting there right now would be lazy.`,
+      `${target.name} should answer, but we need more than that before we send them out.`
+    ]);
+  }
   if (mySuspicion > 58) {
     return pick([
       `I agree on ${target.name}. ${evidenceFor(game, speaker, target)}`,
@@ -481,8 +574,8 @@ function respondToBot(game, speaker, context) {
   }
   return pick([
     `Maybe, but I need ${target.name} to answer before I vote there.`,
-    `I see both sides. ${target.name}, explain the vote and the claim stuff.`,
-    `That is a decent point, but I do not want a lazy pile-on.`
+    `I see the point. ${target.name}, explain your last vote and why your read changed.`,
+    `That is a decent point, but I do not want a lazy pile-on. Let ${target.name} respond.`
   ]);
 }
 
@@ -582,13 +675,35 @@ function evidenceFor(game, speaker, target) {
   if (claim) return `${target.name} claimed ${claim.role}, so their nights need to line up.`;
   const memories = speaker.memories.filter((m) => m.includes(target.name)).slice(-2);
   if (memories.length) return cleanMemory(memories[memories.length - 1]);
+  const lastVoteTarget = target.lastVote ? game.byId(target.lastVote) : null;
+  if (lastVoteTarget) return `${target.name} voted ${lastVoteTarget.name}, and that vote helped shape the day.`;
   const vote = game.history.findLast?.((h) => h.includes(`${target.name} voted`));
-  if (vote) return `${vote} That vote stood out to me.`;
+  if (vote) return `${vote} That timing stood out to me.`;
+  const death = game.lastNightResult?.dead?.[0];
+  if (death && speaker.trust[death.id] > 50) return `${death.name} died last night, and ${target.name} never gave a real read there.`;
   const pushed = game.history.findLast?.((h) => h.includes(`the player pushed ${target.name}`));
   if (pushed) return `${target.name} was already getting pushed earlier and never really answered it.`;
-  if (speaker.suspicion[target.id] > 70) return "Too many things point there.";
-  if (speaker.suspicion[target.id] > 52) return "Their story keeps shifting.";
-  return "It is mostly timing, but it is enough for me.";
+  if (speaker.suspicion[target.id] > 70 && !isEarlyDay(game)) return "Too many things point there.";
+  if (speaker.suspicion[target.id] > 52 && !isEarlyDay(game)) return "Their story keeps shifting.";
+  return `${target.name} has not given enough clear reads yet.`;
+}
+
+function tableSuspect(game) {
+  const candidates = game.living().filter((p) => !p.isHuman);
+  if (isEarlyDay(game)) return candidates[Math.floor(Math.random() * candidates.length)] ?? candidates[0];
+  return candidates.sort((a, b) => averageSuspicionOf(game, b) - averageSuspicionOf(game, a))[0] ?? candidates[0];
+}
+
+function isEarlyDay(game) {
+  return game.day <= 1 && game.history.filter((h) => h.includes("voted")).length === 0;
+}
+
+function hasHardEvidence(game, target) {
+  return Boolean(
+    target.claims?.length ||
+    target.lastVote ||
+    game.history.some((h) => h.includes(`${target.name} voted`) || h.includes(`the player pushed ${target.name}`))
+  );
 }
 
 function inferTargetFromText(game, text) {
@@ -615,14 +730,24 @@ function killReason(game, target) {
 
 function stylize(speaker, text) {
   const style = speaker.personality.style;
-  if (style === "sharp") return `${text} Answer it straight.`;
-  if (style === "joking") return `${text} This meeting is already messy.`;
-  if (style === "nervous") return `Uh, ${text.charAt(0).toLowerCase()}${text.slice(1)}`;
-  if (style === "brief") return text.split(".").slice(0, 2).join(".").trim() + ".";
-  if (style === "bold") return `${text} I am fine being first on that.`;
-  if (style === "smooth") return `${text} Let us not overcomplicate it.`;
-  if (style === "agreeable") return `${text} I can move if someone has better info.`;
+  if (style === "nervous" && Math.random() < 0.25 && !/^maybe\b/i.test(text)) return `I might be wrong, but ${lowerFirst(text)}`;
+  if (style === "brief") return trimSentence(text);
+  if (style === "sharp" && Math.random() < 0.25) return `${trimPunctuation(text)}. Answer the question.`;
+  if (style === "agreeable" && Math.random() < 0.25) return `${trimPunctuation(text)}. I can move if there is better info.`;
   return text;
+}
+
+function trimSentence(text) {
+  const parts = text.split(/(?<=[.!?])\s+/).slice(0, 2).join(" ");
+  return /[.!?]$/.test(parts) ? parts : `${parts}.`;
+}
+
+function trimPunctuation(text) {
+  return text.replace(/[.!?]+$/, "");
+}
+
+function lowerFirst(text) {
+  return text.charAt(0).toLowerCase() + text.slice(1);
 }
 
 function cleanMemory(memory) {
@@ -702,14 +827,14 @@ function resolveNight(game, actions) {
     const target = game.byId(act.targetId);
     if (!actor?.alive || !target?.alive) continue;
     visits.set(actor.id, target.id);
-    if (Number.isFinite(actor.charges) && ["shoot", "clean", "assassinate", "vest"].includes(act.type)) actor.charges -= 1;
+    if (Number.isFinite(actor.charges) && ["shoot", "clean", "vest"].includes(act.type)) actor.charges -= 1;
 
     if (act.type === "protect") target.protected = true;
     if (act.type === "guard") target.guardedBy = actor.id;
     if (act.type === "vest") target.vested = true;
     if (act.type === "frame") target.framed = true;
     if (act.type === "clean") cleanedTargets.add(target.id);
-    if (["kill", "shoot", "assassinate"].includes(act.type)) attacks.push(act);
+    if (["kill", "shoot"].includes(act.type)) attacks.push(act);
     if (act.type === "investigate") {
       const suspicious = target.framed || (target.team === "syndicate" && target.role !== "Boss");
       const clue = target.role === "Boss" ? `${target.name} appears organized but not openly criminal.` : `${target.name} reads as ${suspicious ? "suspicious" : "not suspicious"}.`;
@@ -745,9 +870,6 @@ function resolveNight(game, actions) {
       continue;
     }
     kill(game, target, attack.type === "shoot" ? actor : null);
-    if (attack.type === "assassinate" && actor.role === "Assassin" && actor.target === target.id) {
-      actor.assassinSuccess = true;
-    }
     if (cleanedTargets.has(target.id)) target.cleaned = true;
     dead.push(target);
   }
@@ -825,6 +947,8 @@ function resolveVotes(game, humanVote) {
 
   const eliminated = game.byId(targetId);
   kill(game, eliminated);
+  const assassin = game.players.find((p) => p.role === "Assassin" && p.alive);
+  if (assassin?.target === eliminated.id) assassin.assassinSuccess = true;
   game.history.push(`${eliminated.name} was eliminated by vote. ${eliminated.cleaned ? "Their role was hidden." : `They were the ${eliminated.role}.`}`);
   return {
     eliminated,
@@ -840,7 +964,7 @@ function resolveVotes(game, humanVote) {
 class GameEngine {
   constructor(settings = {}) {
     this.settings = { playerCount: 13, dayLength: 75, ...settings };
-    this.players = createPlayers(this.settings.playerCount);
+    this.players = createPlayers(this.settings.playerCount, this.settings);
     initializeRelationships(this.players);
     this.human = this.players[0];
     this.phase = "reveal";
@@ -902,6 +1026,11 @@ class GameEngine {
     const context = ingestPlayerMessage(this, text.trim());
     const replies = generateDiscussion(this, 4, context);
     replies.forEach((r) => this.addMessage(r.speaker, r.text));
+  }
+
+  aiTableTalk() {
+    if (this.phase !== "day" || this.winner) return;
+    generateDiscussion(this, 2).forEach((r) => this.addMessage(r.speaker, r.text));
   }
 
   resolveNightWith(playerAction) {
@@ -988,7 +1117,7 @@ class GameEngine {
     if (jester?.dead && this.history.at(-1)?.includes(`${jester.name} was eliminated by vote`)) {
       this.winner = { faction: "Jester", text: `${jester.name} wins by getting voted out.` };
     } else if (assassin?.alive && assassin.assassinSuccess) {
-      this.winner = { faction: "Assassin", text: `${assassin.name} wins by personally assassinating their target.` };
+      this.winner = { faction: "Assassin", text: `${assassin.name} wins because their target was voted out.` };
     } else if (syndicate.length >= nonSyndicate.length && syndicate.length > 0) {
       this.winner = { faction: "Syndicate", text: "The Syndicate controls the vote and takes the town." };
     } else if (syndicate.length === 0) {
@@ -1026,10 +1155,14 @@ let selectedVote = null;
 let deathAcknowledged = false;
 let timer = null;
 let revealTimer = null;
+let talkTimer = null;
 let remaining = 0;
 
 function renderMenu() {
-  const settings = { playerCount: 13, dayLength: 75, ...loadSettings() };
+  const saved = loadSettings();
+  const playerCount = Number(saved.playerCount ?? 13);
+  const defaults = defaultRoleSettings(playerCount);
+  const settings = { playerCount, dayLength: 75, ...defaults, ...saved };
   app.innerHTML = `
     <main class="screen">
       <section class="menu">
@@ -1041,9 +1174,21 @@ function renderMenu() {
           <h2>New Match</h2>
           <label class="settingRow">Players
             <select id="playerCount">
-              ${[12, 13, 14, 15].map((n) => `<option value="${n}" ${settings.playerCount === n ? "selected" : ""}>${n} players</option>`).join("")}
+              ${range(5, 15).map((n) => `<option value="${n}" ${settings.playerCount === n ? "selected" : ""}>${n} players</option>`).join("")}
             </select>
           </label>
+          <div class="roleMix">
+            <h3>Role Mix</h3>
+            <label class="settingRow">Syndicate
+              <select id="syndicateCount">${range(1, 4).map((n) => `<option value="${n}" ${settings.syndicateCount === n ? "selected" : ""}>${n}</option>`).join("")}</select>
+            </label>
+            <label class="settingRow">Neutral
+              <select id="neutralCount">${range(0, 3).map((n) => `<option value="${n}" ${settings.neutralCount === n ? "selected" : ""}>${n}</option>`).join("")}</select>
+            </label>
+            <label class="settingRow">Town Power
+              <select id="townPowerCount">${range(0, 8).map((n) => `<option value="${n}" ${settings.townPowerCount === n ? "selected" : ""}>${n}</option>`).join("")}</select>
+            </label>
+          </div>
           <label class="settingRow">Discussion Timer
             <select id="dayLength">
               ${[45, 75, 105, 150].map((n) => `<option value="${n}" ${settings.dayLength === n ? "selected" : ""}>${n} seconds</option>`).join("")}
@@ -1058,14 +1203,24 @@ function renderMenu() {
   document.querySelector("#startGame").addEventListener("click", () => {
     const next = {
       playerCount: Number(document.querySelector("#playerCount").value),
-      dayLength: Number(document.querySelector("#dayLength").value)
+      dayLength: Number(document.querySelector("#dayLength").value),
+      syndicateCount: Number(document.querySelector("#syndicateCount").value),
+      neutralCount: Number(document.querySelector("#neutralCount").value),
+      townPowerCount: Number(document.querySelector("#townPowerCount").value)
     };
+    normalizeRoleMix(next);
     saveSettings(next);
     game = new GameEngine(next);
     deathAcknowledged = false;
     renderReveal();
   });
   document.querySelector("#tutorialBtn").addEventListener("click", renderTutorial);
+}
+
+function normalizeRoleMix(settings) {
+  settings.syndicateCount = Math.max(1, Math.min(settings.syndicateCount, Math.max(1, Math.floor((settings.playerCount - 1) / 2))));
+  settings.neutralCount = Math.max(0, Math.min(settings.neutralCount, settings.playerCount - settings.syndicateCount - 1));
+  settings.townPowerCount = Math.max(0, Math.min(settings.townPowerCount, settings.playerCount - settings.syndicateCount - settings.neutralCount));
 }
 
 function renderTutorial() {
@@ -1078,7 +1233,7 @@ function renderTutorial() {
           <div><h3>2. Use Night Actions</h3><p>Power roles investigate, protect, track, frame, clean, or attack. Some results are private and some appear publicly in the morning.</p></div>
           <div><h3>3. Talk During Day</h3><p>Type in chat. Bots react to names, accusations, defenses, claims, votes, and contradictions they remember from earlier rounds.</p></div>
           <div><h3>4. Vote at Meeting</h3><p>The voting board shows every player. Living players get a Voted tag once their vote is locked. Pick a suspect and confirm.</p></div>
-          <div><h3>5. Win Conditions</h3><p>Town wins by removing the Syndicate. Syndicate wins by controlling the vote. Neutral roles can steal or share wins.</p></div>
+          <div><h3>5. Win Conditions</h3><p>Town wins by removing the Syndicate. Syndicate wins at parity with all non-mafia. Assassin wins if their target is voted out.</p></div>
           <div><h3>6. If You Die</h3><p>Restart or spectate. Spectating shows conversations, night actions, votes, reveals, and the final winner.</p></div>
         </div>
         <button class="primary" id="tutorialBack">Back</button>
@@ -1095,7 +1250,7 @@ function renderReveal() {
         <div class="faction">${role.faction}</div>
         <div class="roleName">${game.human.role}</div>
         <p>${role.description}</p>
-        ${game.human.role === "Assassin" ? `<p class="small">Your target is ${game.byId(game.human.target)?.name}.</p>` : ""}
+        ${game.human.role === "Assassin" ? `<p class="small">Your target is ${game.byId(game.human.target)?.name}. Get them voted out.</p>` : ""}
         <button class="primary" id="continue">Enter Night</button>
       </section>
     </main>`;
@@ -1134,6 +1289,7 @@ function renderGame() {
 
   bindGameEvents();
   scheduleAutoAdvance();
+  scheduleTableTalk();
   const chat = document.querySelector("#chat");
   if (chat) chat.scrollTop = chat.scrollHeight;
 }
@@ -1152,7 +1308,7 @@ function rolePanel() {
     <div class="roleName">${game.human.role}</div>
     <p class="small">${role.description}</p>
     ${Number.isFinite(game.human.charges) ? `<div class="small">Charges: ${game.human.charges}</div>` : ""}
-    ${game.human.role === "Assassin" ? `<div class="small">Target: ${game.byId(game.human.target)?.name}</div>` : ""}
+    ${game.human.role === "Assassin" ? `<div class="small">Target: ${game.byId(game.human.target)?.name} must be voted out.</div>` : ""}
     ${game.spectating ? `<div class="small">Spectating. You cannot influence the match.</div>` : ""}
   </section>`;
 }
@@ -1291,6 +1447,7 @@ function votedCount() {
 function bindGameEvents() {
   document.querySelector("#menuBtn").addEventListener("click", () => {
     clearInterval(timer);
+    clearTimeout(talkTimer);
     renderMenu();
   });
   document.querySelector("#composer").addEventListener("submit", (event) => {
@@ -1365,6 +1522,16 @@ function scheduleAutoAdvance() {
       renderGame();
     }, 4200);
   }
+}
+
+function scheduleTableTalk() {
+  clearTimeout(talkTimer);
+  if (!game || game.phase !== "day") return;
+  talkTimer = setTimeout(() => {
+    if (game?.phase !== "day") return;
+    game.aiTableTalk();
+    renderGame();
+  }, 4500 + Math.floor(Math.random() * 3500));
 }
 
 function buildHumanAction(targetId) {
@@ -1456,7 +1623,6 @@ function abilityCopy(ability) {
     command: "Choose the Syndicate elimination.",
     clean: "Hide a target's role if they die tonight.",
     frame: "Make a player look suspicious to investigations.",
-    assassinate: "Attempt to eliminate your personal target.",
     vest: "Protect yourself for the night."
   };
   return map[ability] ?? "Choose a target.";
@@ -1468,7 +1634,6 @@ function nightTargetHint(ability, target) {
   if (ability === "guard") return `You may reveal yourself if ${target.name} is attacked.`;
   if (ability === "track") return `You will learn who ${target.name} visits.`;
   if (ability === "shoot") return `If ${target.name} is town, this will hurt your faction.`;
-  if (ability === "assassinate") return target.id === game.human.target ? "This is your target. A successful assassination wins." : "This is not your target.";
   if (ability === "vest") return "You will protect yourself tonight.";
   if (["kill", "command"].includes(ability)) return `The Syndicate will try to eliminate ${target.name}.`;
   if (ability === "clean") return `If ${target.name} dies, their role can be hidden.`;
@@ -1488,6 +1653,10 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function range(start, end) {
+  return Array.from({ length: end - start + 1 }, (_, index) => start + index);
 }
 
 

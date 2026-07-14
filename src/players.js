@@ -18,8 +18,8 @@ const personalities = [
 
 const colors = ["#e7b85a", "#64a9ff", "#62c98b", "#df5f65", "#b18cff", "#7dd3c7", "#f29b76", "#c6d36e"];
 
-export function createPlayers(count) {
-  const deck = buildRoleDeck(count);
+export function createPlayers(count, roleSettings = {}) {
+  const deck = buildRoleDeck(count, roleSettings);
   const pool = [...names].sort(() => Math.random() - 0.5);
   return deck.map((role, index) => {
     const isHuman = index === 0;

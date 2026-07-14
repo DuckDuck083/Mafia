@@ -1,5 +1,5 @@
 import { GameEngine } from "./gameEngine.js";
-import { ROLES, visibleRole } from "./roles.js";
+import { ROLES, defaultRoleSettings, visibleRole } from "./roles.js";
 import { loadSettings, saveSettings } from "./saveData.js";
 
 const app = document.querySelector("#app");
@@ -9,10 +9,14 @@ let selectedVote = null;
 let deathAcknowledged = false;
 let timer = null;
 let revealTimer = null;
+let talkTimer = null;
 let remaining = 0;
 
 export function renderMenu() {
-  const settings = { playerCount: 13, dayLength: 75, ...loadSettings() };
+  const saved = loadSettings();
+  const playerCount = Number(saved.playerCount ?? 13);
+  const defaults = defaultRoleSettings(playerCount);
+  const settings = { playerCount, dayLength: 75, ...defaults, ...saved };
   app.innerHTML = `
     <main class="screen">
       <section class="menu">
@@ -24,9 +28,21 @@ export function renderMenu() {
           <h2>New Match</h2>
           <label class="settingRow">Players
             <select id="playerCount">
-              ${[12, 13, 14, 15].map((n) => `<option value="${n}" ${settings.playerCount === n ? "selected" : ""}>${n} players</option>`).join("")}
+              ${range(5, 15).map((n) => `<option value="${n}" ${settings.playerCount === n ? "selected" : ""}>${n} players</option>`).join("")}
             </select>
           </label>
+          <div class="roleMix">
+            <h3>Role Mix</h3>
+            <label class="settingRow">Syndicate
+              <select id="syndicateCount">${range(1, 4).map((n) => `<option value="${n}" ${settings.syndicateCount === n ? "selected" : ""}>${n}</option>`).join("")}</select>
+            </label>
+            <label class="settingRow">Neutral
+              <select id="neutralCount">${range(0, 3).map((n) => `<option value="${n}" ${settings.neutralCount === n ? "selected" : ""}>${n}</option>`).join("")}</select>
+            </label>
+            <label class="settingRow">Town Power
+              <select id="townPowerCount">${range(0, 8).map((n) => `<option value="${n}" ${settings.townPowerCount === n ? "selected" : ""}>${n}</option>`).join("")}</select>
+            </label>
+          </div>
           <label class="settingRow">Discussion Timer
             <select id="dayLength">
               ${[45, 75, 105, 150].map((n) => `<option value="${n}" ${settings.dayLength === n ? "selected" : ""}>${n} seconds</option>`).join("")}
@@ -41,14 +57,24 @@ export function renderMenu() {
   document.querySelector("#startGame").addEventListener("click", () => {
     const next = {
       playerCount: Number(document.querySelector("#playerCount").value),
-      dayLength: Number(document.querySelector("#dayLength").value)
+      dayLength: Number(document.querySelector("#dayLength").value),
+      syndicateCount: Number(document.querySelector("#syndicateCount").value),
+      neutralCount: Number(document.querySelector("#neutralCount").value),
+      townPowerCount: Number(document.querySelector("#townPowerCount").value)
     };
+    normalizeRoleMix(next);
     saveSettings(next);
     game = new GameEngine(next);
     deathAcknowledged = false;
     renderReveal();
   });
   document.querySelector("#tutorialBtn").addEventListener("click", renderTutorial);
+}
+
+function normalizeRoleMix(settings) {
+  settings.syndicateCount = Math.max(1, Math.min(settings.syndicateCount, Math.max(1, Math.floor((settings.playerCount - 1) / 2))));
+  settings.neutralCount = Math.max(0, Math.min(settings.neutralCount, settings.playerCount - settings.syndicateCount - 1));
+  settings.townPowerCount = Math.max(0, Math.min(settings.townPowerCount, settings.playerCount - settings.syndicateCount - settings.neutralCount));
 }
 
 function renderTutorial() {
@@ -61,7 +87,7 @@ function renderTutorial() {
           <div><h3>2. Use Night Actions</h3><p>Power roles investigate, protect, track, frame, clean, or attack. Some results are private and some appear publicly in the morning.</p></div>
           <div><h3>3. Talk During Day</h3><p>Type in chat. Bots react to names, accusations, defenses, claims, votes, and contradictions they remember from earlier rounds.</p></div>
           <div><h3>4. Vote at Meeting</h3><p>The voting board shows every player. Living players get a Voted tag once their vote is locked. Pick a suspect and confirm.</p></div>
-          <div><h3>5. Win Conditions</h3><p>Town wins by removing the Syndicate. Syndicate wins by controlling the vote. Neutral roles can steal or share wins.</p></div>
+          <div><h3>5. Win Conditions</h3><p>Town wins by removing the Syndicate. Syndicate wins at parity with all non-mafia. Assassin wins if their target is voted out.</p></div>
           <div><h3>6. If You Die</h3><p>Restart or spectate. Spectating shows conversations, night actions, votes, reveals, and the final winner.</p></div>
         </div>
         <button class="primary" id="tutorialBack">Back</button>
@@ -78,7 +104,7 @@ function renderReveal() {
         <div class="faction">${role.faction}</div>
         <div class="roleName">${game.human.role}</div>
         <p>${role.description}</p>
-        ${game.human.role === "Assassin" ? `<p class="small">Your target is ${game.byId(game.human.target)?.name}.</p>` : ""}
+        ${game.human.role === "Assassin" ? `<p class="small">Your target is ${game.byId(game.human.target)?.name}. Get them voted out.</p>` : ""}
         <button class="primary" id="continue">Enter Night</button>
       </section>
     </main>`;
@@ -117,6 +143,7 @@ function renderGame() {
 
   bindGameEvents();
   scheduleAutoAdvance();
+  scheduleTableTalk();
   const chat = document.querySelector("#chat");
   if (chat) chat.scrollTop = chat.scrollHeight;
 }
@@ -135,7 +162,7 @@ function rolePanel() {
     <div class="roleName">${game.human.role}</div>
     <p class="small">${role.description}</p>
     ${Number.isFinite(game.human.charges) ? `<div class="small">Charges: ${game.human.charges}</div>` : ""}
-    ${game.human.role === "Assassin" ? `<div class="small">Target: ${game.byId(game.human.target)?.name}</div>` : ""}
+    ${game.human.role === "Assassin" ? `<div class="small">Target: ${game.byId(game.human.target)?.name} must be voted out.</div>` : ""}
     ${game.spectating ? `<div class="small">Spectating. You cannot influence the match.</div>` : ""}
   </section>`;
 }
@@ -274,6 +301,7 @@ function votedCount() {
 function bindGameEvents() {
   document.querySelector("#menuBtn").addEventListener("click", () => {
     clearInterval(timer);
+    clearTimeout(talkTimer);
     renderMenu();
   });
   document.querySelector("#composer").addEventListener("submit", (event) => {
@@ -348,6 +376,16 @@ function scheduleAutoAdvance() {
       renderGame();
     }, 4200);
   }
+}
+
+function scheduleTableTalk() {
+  clearTimeout(talkTimer);
+  if (!game || game.phase !== "day") return;
+  talkTimer = setTimeout(() => {
+    if (game?.phase !== "day") return;
+    game.aiTableTalk();
+    renderGame();
+  }, 4500 + Math.floor(Math.random() * 3500));
 }
 
 function buildHumanAction(targetId) {
@@ -439,7 +477,6 @@ function abilityCopy(ability) {
     command: "Choose the Syndicate elimination.",
     clean: "Hide a target's role if they die tonight.",
     frame: "Make a player look suspicious to investigations.",
-    assassinate: "Attempt to eliminate your personal target.",
     vest: "Protect yourself for the night."
   };
   return map[ability] ?? "Choose a target.";
@@ -451,7 +488,6 @@ function nightTargetHint(ability, target) {
   if (ability === "guard") return `You may reveal yourself if ${target.name} is attacked.`;
   if (ability === "track") return `You will learn who ${target.name} visits.`;
   if (ability === "shoot") return `If ${target.name} is town, this will hurt your faction.`;
-  if (ability === "assassinate") return target.id === game.human.target ? "This is your target. A successful assassination wins." : "This is not your target.";
   if (ability === "vest") return "You will protect yourself tonight.";
   if (["kill", "command"].includes(ability)) return `The Syndicate will try to eliminate ${target.name}.`;
   if (ability === "clean") return `If ${target.name} dies, their role can be hidden.`;
@@ -471,4 +507,8 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function range(start, end) {
+  return Array.from({ length: end - start + 1 }, (_, index) => start + index);
 }

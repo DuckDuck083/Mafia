@@ -70,23 +70,29 @@ export function aiNightAction(game, actor) {
   if (actor.ability === "kill") return action(actor, syndicateKillTarget, "kill");
   if (actor.ability === "clean" && actor.charges > 0) return action(actor, syndicateKillTarget, "clean");
   if (actor.ability === "frame") return action(actor, mostTrusted(actor, enemies), "frame");
-  if (actor.ability === "assassinate" && actor.charges > 0) {
-    const target = game.byId(actor.target);
-    if (target?.alive && (game.day > 2 || actor.suspicion[target.id] > 58)) return action(actor, target, "assassinate");
-  }
   if (actor.ability === "vest" && actor.charges > 0 && averageSuspicionOf(game, actor) > 44) return action(actor, actor, "vest");
   return null;
 }
 
 export function generateDiscussion(game, count = 5, context = null) {
   let speakers = game.living().filter((p) => !p.isHuman);
+  if (!context) {
+    const target = tableSuspect(game);
+    context = { tableTopic: true, target, kind: "case" };
+    const caseMaker = speakers.filter((p) => p.id !== target?.id).sort((a, b) => (b.suspicion[target?.id] ?? 0) - (a.suspicion[target?.id] ?? 0))[0];
+    speakers = [
+      caseMaker,
+      target,
+      ...speakers.filter((p) => p.id !== caseMaker?.id && p.id !== target?.id)
+    ].filter(Boolean);
+  }
   if (context?.mentioned?.length) {
     const mentionedIds = new Set(context.mentioned.map((p) => p.id));
     speakers = [
       ...speakers.filter((p) => mentionedIds.has(p.id)),
       ...speakers.filter((p) => !mentionedIds.has(p.id))
     ];
-  } else {
+  } else if (!context?.tableTopic) {
     speakers = speakers.sort(() => Math.random() - 0.5);
   }
   const results = [];
@@ -139,6 +145,10 @@ export function generateSyndicateDiscussion(game, context = null) {
 export function chooseVote(game, voter) {
   if (!voter.alive) return null;
   if (voter.isHuman) return null;
+  if (isEarlyDay(game) && Math.random() < 0.45) {
+    const pool = game.living().filter((p) => p.id !== voter.id);
+    return pool[Math.floor(Math.random() * pool.length)]?.id ?? null;
+  }
   if (voter.role === "Jester") {
     const loudest = game.living().filter((p) => p.id !== voter.id).sort((a, b) => (voter.trust[b.id] ?? 0) - (voter.trust[a.id] ?? 0))[0];
     return loudest?.id ?? null;
@@ -171,6 +181,9 @@ function speak(game, speaker, context = null) {
   if (context?.fromBot) {
     const reply = respondToBot(game, speaker, context);
     if (reply) return stylize(speaker, reply);
+  }
+  if (context?.tableTopic && context.target) {
+    return stylize(speaker, makeCase(game, speaker, context.target));
   }
 
   const living = game.living().filter((p) => p.id !== speaker.id);
@@ -210,6 +223,13 @@ function speak(game, speaker, context = null) {
     `Can ${target.name} explain their vote again? I did not like that.`,
     `I am not ready to hard push it, but ${target.name} is not sitting right with me.`
   ]));
+  if (isEarlyDay(game)) {
+    return stylize(speaker, pick([
+      `I want to hear more from ${target.name} before I vote there.`,
+      `${target.name}, give us two suspects and one person you trust.`,
+      `I am not voting off vibes yet, but ${target.name} has been too quiet.`
+    ]));
+  }
   return stylize(speaker, pick([
     `I want to hear more from ${target.name}.`,
     `${target.name}, who are your top two suspects?`,
@@ -218,21 +238,63 @@ function speak(game, speaker, context = null) {
   ]));
 }
 
+function makeCase(game, speaker, target) {
+  if (target.id === speaker.id) {
+    return pick([
+      `I will answer it. I do not have hard info yet, but I can give reads if people want them.`,
+      `I am here. If the issue is that I have been quiet, ask me something specific.`,
+      `I get why my slot is easy to question, but there is not an actual catch on me yet.`
+    ]);
+  }
+  const reason = evidenceFor(game, speaker, target);
+  if (isEarlyDay(game) && !hasHardEvidence(game, target)) {
+    return pick([
+      `I do not want to hammer ${target.name} on Day 1. I just want them to give real reads.`,
+      `${target.name}, talk more. Who do you trust and who feels fake?`,
+      `I am not voting ${target.name} off nothing, but they need to stop sitting back.`
+    ]);
+  }
+  const question = pick([
+    `${target.name}, explain that.`,
+    `${target.name}, who are you actually voting today?`,
+    `${target.name}, give us your full read list.`
+  ]);
+  return pick([
+    `I want pressure on ${target.name}. ${reason} ${question}`,
+    `${target.name} is the vote I am looking at because ${lowerFirst(reason)}`,
+    `Can we stop ignoring ${target.name}? ${reason}`
+  ]);
+}
+
 function respondToBot(game, speaker, context) {
   const target = context.target;
   if (!target || target.dead || target.id === speaker.id) {
     const accuser = context.speaker;
     if (target?.id === speaker.id) {
+      if (isEarlyDay(game)) {
+        return pick([
+          `I can answer. There has not even been a vote yet, so ask me for reads instead of calling it a case.`,
+          `I am not hiding. I just do not have hard info yet.`,
+          `If the problem is that I am quiet, fine. My current lean is that the loud pushers need scrutiny too.`
+        ]);
+      }
       return pick([
-        `That is not fair. The actual reason people suspect me is just one bad vote, not a real catch.`,
-        `You are leaving out that I pushed early yesterday. That does not make sense as Syndicate.`,
-        `If you think I am evil, say what team I am with and who my partner is.`
+        `That is not a real case on me. My last vote was explainable, and nobody countered it at the time.`,
+        `You are skipping context. I pushed before the vote, I did not just appear at the end.`,
+        `If you think I am Syndicate, name a partner. Otherwise this is just an easy push.`
       ]);
     }
     return null;
   }
   const mySuspicion = speaker.suspicion[target.id] ?? 30;
   const accuser = context.speaker;
+  if (isEarlyDay(game) && !hasHardEvidence(game, target)) {
+    return pick([
+      `I agree they should talk, but I am not voting ${target.name} just for being quiet.`,
+      `Pressure is fine. Voting there right now would be lazy.`,
+      `${target.name} should answer, but we need more than that before we send them out.`
+    ]);
+  }
   if (mySuspicion > 58) {
     return pick([
       `I agree on ${target.name}. ${evidenceFor(game, speaker, target)}`,
@@ -250,8 +312,8 @@ function respondToBot(game, speaker, context) {
   }
   return pick([
     `Maybe, but I need ${target.name} to answer before I vote there.`,
-    `I see both sides. ${target.name}, explain the vote and the claim stuff.`,
-    `That is a decent point, but I do not want a lazy pile-on.`
+    `I see the point. ${target.name}, explain your last vote and why your read changed.`,
+    `That is a decent point, but I do not want a lazy pile-on. Let ${target.name} respond.`
   ]);
 }
 
@@ -351,13 +413,35 @@ function evidenceFor(game, speaker, target) {
   if (claim) return `${target.name} claimed ${claim.role}, so their nights need to line up.`;
   const memories = speaker.memories.filter((m) => m.includes(target.name)).slice(-2);
   if (memories.length) return cleanMemory(memories[memories.length - 1]);
+  const lastVoteTarget = target.lastVote ? game.byId(target.lastVote) : null;
+  if (lastVoteTarget) return `${target.name} voted ${lastVoteTarget.name}, and that vote helped shape the day.`;
   const vote = game.history.findLast?.((h) => h.includes(`${target.name} voted`));
-  if (vote) return `${vote} That vote stood out to me.`;
+  if (vote) return `${vote} That timing stood out to me.`;
+  const death = game.lastNightResult?.dead?.[0];
+  if (death && speaker.trust[death.id] > 50) return `${death.name} died last night, and ${target.name} never gave a real read there.`;
   const pushed = game.history.findLast?.((h) => h.includes(`the player pushed ${target.name}`));
   if (pushed) return `${target.name} was already getting pushed earlier and never really answered it.`;
-  if (speaker.suspicion[target.id] > 70) return "Too many things point there.";
-  if (speaker.suspicion[target.id] > 52) return "Their story keeps shifting.";
-  return "It is mostly timing, but it is enough for me.";
+  if (speaker.suspicion[target.id] > 70 && !isEarlyDay(game)) return "Too many things point there.";
+  if (speaker.suspicion[target.id] > 52 && !isEarlyDay(game)) return "Their story keeps shifting.";
+  return `${target.name} has not given enough clear reads yet.`;
+}
+
+function tableSuspect(game) {
+  const candidates = game.living().filter((p) => !p.isHuman);
+  if (isEarlyDay(game)) return candidates[Math.floor(Math.random() * candidates.length)] ?? candidates[0];
+  return candidates.sort((a, b) => averageSuspicionOf(game, b) - averageSuspicionOf(game, a))[0] ?? candidates[0];
+}
+
+function isEarlyDay(game) {
+  return game.day <= 1 && game.history.filter((h) => h.includes("voted")).length === 0;
+}
+
+function hasHardEvidence(game, target) {
+  return Boolean(
+    target.claims?.length ||
+    target.lastVote ||
+    game.history.some((h) => h.includes(`${target.name} voted`) || h.includes(`the player pushed ${target.name}`))
+  );
 }
 
 function inferTargetFromText(game, text) {
@@ -384,14 +468,24 @@ function killReason(game, target) {
 
 function stylize(speaker, text) {
   const style = speaker.personality.style;
-  if (style === "sharp") return `${text} Answer it straight.`;
-  if (style === "joking") return `${text} This meeting is already messy.`;
-  if (style === "nervous") return `Uh, ${text.charAt(0).toLowerCase()}${text.slice(1)}`;
-  if (style === "brief") return text.split(".").slice(0, 2).join(".").trim() + ".";
-  if (style === "bold") return `${text} I am fine being first on that.`;
-  if (style === "smooth") return `${text} Let us not overcomplicate it.`;
-  if (style === "agreeable") return `${text} I can move if someone has better info.`;
+  if (style === "nervous" && Math.random() < 0.25 && !/^maybe\b/i.test(text)) return `I might be wrong, but ${lowerFirst(text)}`;
+  if (style === "brief") return trimSentence(text);
+  if (style === "sharp" && Math.random() < 0.25) return `${trimPunctuation(text)}. Answer the question.`;
+  if (style === "agreeable" && Math.random() < 0.25) return `${trimPunctuation(text)}. I can move if there is better info.`;
   return text;
+}
+
+function trimSentence(text) {
+  const parts = text.split(/(?<=[.!?])\s+/).slice(0, 2).join(" ");
+  return /[.!?]$/.test(parts) ? parts : `${parts}.`;
+}
+
+function trimPunctuation(text) {
+  return text.replace(/[.!?]+$/, "");
+}
+
+function lowerFirst(text) {
+  return text.charAt(0).toLowerCase() + text.slice(1);
 }
 
 function cleanMemory(memory) {

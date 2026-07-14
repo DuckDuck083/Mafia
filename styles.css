@@ -100,6 +100,17 @@ h1 {
   color: var(--muted);
   font-size: 0.9rem;
 }
+.roleMix {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #10161d;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.7rem;
+}
+.roleMix h3 {
+  margin: 0;
+}
 select, input[type="text"] {
   width: 100%;
   color: var(--text);
