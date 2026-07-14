@@ -10,7 +10,12 @@ export function resolveVotes(game, humanVote) {
     const weight = voter.role === "Mayor" && voter.revealedMayor ? 3 : 1;
     votes.push({ voterId: voter.id, targetId, weight });
     const target = game.byId(targetId);
-    if (target) {
+    if (targetId === "skip") {
+      game.history.push(`${voter.name} voted Skip.`);
+      for (const ai of game.players.filter((p) => !p.isHuman && p.id !== voter.id)) {
+        ai.memories.push(`${game.dayLabel()}: ${voter.name} voted Skip.`);
+      }
+    } else if (target) {
       game.history.push(`${voter.name} voted ${target.name}.`);
       for (const ai of game.players.filter((p) => !p.isHuman && p.id !== voter.id)) {
         if (target.team === ai.team && ai.team === "syndicate") ai.suspicion[voter.id] += 7;
@@ -29,9 +34,10 @@ export function resolveVotes(game, humanVote) {
     text: explainVote(game, game.byId(v.voterId), v.targetId)
   }));
 
-  if (!targetId || tied.length > 1) {
-    game.history.push("The vote tied. No one was eliminated.");
-    return { eliminated: null, votes, speeches, summary: "The vote tied. No one was eliminated." };
+  if (!targetId || targetId === "skip" || tied.length > 1) {
+    const summary = targetId === "skip" && tied.length === 1 ? "The town skipped. No one was eliminated." : "The vote tied. No one was eliminated.";
+    game.history.push(summary);
+    return { eliminated: null, votes, speeches, summary };
   }
 
   const eliminated = game.byId(targetId);

@@ -31,11 +31,16 @@ export function ingestPlayerMessage(game, text) {
     }
     if (context.claimedRole) {
       game.human.claims.push({ day: game.day, role: context.claimedRole, text });
-      const believable = context.claimedRole === game.human.role || Math.random() < ai.personality.intelligence * 0.22;
-      ai.suspicion[game.human.id] = clamp(ai.suspicion[game.human.id] + (believable ? -5 : 8), 0, 100);
+      const realRoleExists = game.living().some((p) => !p.isHuman && p.role === context.claimedRole);
+      const believable = context.claimedRole === game.human.role && !realRoleExists;
+      ai.suspicion[game.human.id] = clamp(ai.suspicion[game.human.id] + (believable ? -4 : 14), 0, 100);
       ai.memories.push(`${game.dayLabel()}: the player claimed ${context.claimedRole}.`);
+      if (realRoleExists) ai.memories.push(`${game.dayLabel()}: the player's ${context.claimedRole} claim may be contested.`);
     } else if (suspiciousWords.some((w) => lower.includes(w))) {
-      ai.suspicion[game.human.id] = clamp(ai.suspicion[game.human.id] + 4, 0, 100);
+      const namedTarget = context.mentioned[0];
+      const weakPush = namedTarget && !hasHardEvidence(game, namedTarget);
+      ai.suspicion[game.human.id] = clamp(ai.suspicion[game.human.id] + (weakPush ? 9 : 4), 0, 100);
+      if (weakPush) ai.memories.push(`${game.dayLabel()}: the player pushed ${namedTarget.name} without hard evidence.`);
     }
   }
   return context;
@@ -58,13 +63,13 @@ export function aiNightAction(game, actor) {
   const enemies = living.filter((p) => p.team !== actor.team);
   const townish = living.filter((p) => p.team !== "syndicate");
   const suspicious = mostSuspicious(actor, living);
-  const trusted = mostTrusted(actor, living);
+  const trusted = mostTrusted(actor, living.filter((p) => p.team === "town").length ? living.filter((p) => p.team === "town") : living);
   const syndicateKillTarget = pickSyndicateKill(game, actor, townish);
 
-  if (actor.ability === "investigate") return action(actor, suspicious, "investigate");
-  if (actor.ability === "protect") return action(actor, actor.suspicion[actor.id] > 60 ? actor : trusted, "protect");
-  if (actor.ability === "guard") return action(actor, trusted, "guard");
-  if (actor.ability === "track") return action(actor, suspicious, "track");
+  if (actor.ability === "investigate") return action(actor, bestInvestigationTarget(game, actor), "investigate");
+  if (actor.ability === "protect") return action(actor, bestProtectionTarget(game, actor), "protect");
+  if (actor.ability === "guard") return action(actor, bestProtectionTarget(game, actor), "guard");
+  if (actor.ability === "track") return action(actor, bestInvestigationTarget(game, actor), "track");
   if (actor.ability === "shoot" && actor.charges > 0 && actor.suspicion[suspicious.id] > 72) return action(actor, suspicious, "shoot");
   if (actor.ability === "command") return action(actor, syndicateKillTarget, "command");
   if (actor.ability === "kill") return action(actor, syndicateKillTarget, "kill");
@@ -145,9 +150,10 @@ export function generateSyndicateDiscussion(game, context = null) {
 export function chooseVote(game, voter) {
   if (!voter.alive) return null;
   if (voter.isHuman) return null;
-  if (isEarlyDay(game) && Math.random() < 0.45) {
-    const pool = game.living().filter((p) => p.id !== voter.id);
-    return pool[Math.floor(Math.random() * pool.length)]?.id ?? null;
+  if (shouldSkipVote(game, voter)) return "skip";
+  if (isEarlyDay(game) && Math.random() < 0.35) {
+    const pool = game.living().filter((p) => p.id !== voter.id && (voter.suspicion[p.id] ?? 0) > 42);
+    return pool[Math.floor(Math.random() * pool.length)]?.id ?? "skip";
   }
   if (voter.role === "Jester") {
     const loudest = game.living().filter((p) => p.id !== voter.id).sort((a, b) => (voter.trust[b.id] ?? 0) - (voter.trust[a.id] ?? 0))[0];
@@ -163,6 +169,13 @@ export function chooseVote(game, voter) {
 }
 
 export function explainVote(game, voter, targetId) {
+  if (targetId === "skip") {
+    return stylize(voter, pick([
+      `I am skipping. There is not enough to execute someone yet.`,
+      `Skip for me. I want more voting data before we send someone out.`,
+      `I do not like any case enough. I am skipping.`
+    ]));
+  }
   const target = game.byId(targetId);
   if (!target) return "";
   const reasons = evidenceFor(game, voter, target);
@@ -369,7 +382,7 @@ function respondToPlayer(game, speaker, context) {
   if (context.kind === "defend" && target) {
     return pick([
       `Why are you clearing ${target.name}? What did they do that was towny?`,
-      `I do not hate that defense, but ${target.name} still needs to explain their vote.`,
+      `That defense is noted. If ${target.name} flips bad, I am coming back to you.`,
       `Maybe, but defending ${target.name} that hard makes me want details.`
     ]);
   }
@@ -411,6 +424,10 @@ function parsePlayerMessage(game, text) {
 function evidenceFor(game, speaker, target) {
   const claim = target.claims?.at(-1);
   if (claim) return `${target.name} claimed ${claim.role}, so their nights need to line up.`;
+  if (target.isHuman) {
+    const memory = speaker.memories.findLast?.((m) => m.includes("the player")) ?? null;
+    if (memory) return cleanMemory(memory);
+  }
   const memories = speaker.memories.filter((m) => m.includes(target.name)).slice(-2);
   if (memories.length) return cleanMemory(memories[memories.length - 1]);
   const lastVoteTarget = target.lastVote ? game.byId(target.lastVote) : null;
@@ -424,6 +441,43 @@ function evidenceFor(game, speaker, target) {
   if (speaker.suspicion[target.id] > 70 && !isEarlyDay(game)) return "Too many things point there.";
   if (speaker.suspicion[target.id] > 52 && !isEarlyDay(game)) return "Their story keeps shifting.";
   return `${target.name} has not given enough clear reads yet.`;
+}
+
+function shouldSkipVote(game, voter) {
+  if (voter.team === "syndicate") return false;
+  if (voter.role === "Jester") return false;
+  const suspects = game.living().filter((p) => p.id !== voter.id).map((p) => voter.suspicion[p.id] ?? 0);
+  const top = Math.max(...suspects, 0);
+  if (isEarlyDay(game) && top < 58) return Math.random() < 0.72;
+  if (top < 47) return Math.random() < 0.45;
+  return false;
+}
+
+function bestInvestigationTarget(game, actor) {
+  const candidates = game.living().filter((p) => p.id !== actor.id && p.team !== "town");
+  const pool = candidates.length ? candidates : game.living().filter((p) => p.id !== actor.id);
+  return [...pool].sort((a, b) => investigationScore(game, actor, b) - investigationScore(game, actor, a))[0];
+}
+
+function investigationScore(game, actor, target) {
+  const suspicion = actor.suspicion[target.id] ?? 30;
+  const claimed = target.claims?.length ? 18 : 0;
+  const defendedBad = target.memories?.some((m) => m.includes("defended")) ? 5 : 0;
+  const quiet = target.memories.length < 2 ? 6 : 0;
+  return suspicion + claimed + defendedBad + quiet + Math.random() * 8;
+}
+
+function bestProtectionTarget(game, actor) {
+  const candidates = game.living().filter((p) => p.id !== actor.id && p.team === "town");
+  const pool = candidates.length ? candidates : game.living().filter((p) => p.id !== actor.id);
+  return [...pool].sort((a, b) => protectionScore(game, actor, b) - protectionScore(game, actor, a))[0] ?? actor;
+}
+
+function protectionScore(game, actor, target) {
+  const power = ["Investigator", "Tracker", "Medic", "Guardian", "Vigilante"].includes(target.role) ? 24 : 0;
+  const trusted = actor.trust[target.id] ?? 45;
+  const lowHeat = 100 - averageSuspicionOf(game, target);
+  return power + trusted * 0.5 + lowHeat * 0.35 + Math.random() * 10;
 }
 
 function tableSuspect(game) {

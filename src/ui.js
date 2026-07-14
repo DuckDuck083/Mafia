@@ -231,6 +231,7 @@ function meetingBoard() {
     </div>
     <div class="meetingGrid">
       ${game.players.map((p) => meetingTile(p)).join("")}
+      ${skipTile()}
     </div>
   </section>`;
 }
@@ -249,6 +250,17 @@ function meetingTile(p) {
   </div>`;
 }
 
+function skipTile() {
+  const selected = selectedVote === "skip";
+  return `<div class="meetingTile skipTile ${selected ? "selected" : ""} clickable" data-vote="skip">
+    <div class="skipIcon">SKIP</div>
+    <div class="meetingName">Skip Vote</div>
+    <div class="meetingRole">No elimination</div>
+    ${selected ? `<div class="voteControls"><button class="confirmIcon" data-vote-confirm="skip" title="Confirm skip">OK</button><button class="cancelIcon" data-vote-cancel title="Cancel vote">X</button></div>` : ""}
+    <div class="voteTag ${selected ? "done" : ""}">${selected ? "I Voted" : "Option"}</div>
+  </div>`;
+}
+
 function voteRevealBoard() {
   const result = game.lastVoteResult;
   const rows = result?.votes ?? [];
@@ -262,14 +274,14 @@ function voteRevealBoard() {
     <div class="voteRevealList">
       ${rows.map((vote) => {
         const voter = game.byId(vote.voterId);
-        const target = game.byId(vote.targetId);
+        const target = vote.targetId === "skip" ? { name: "Skip" } : game.byId(vote.targetId);
         return `<div class="voteRevealRow">
           <span>${voter?.name}</span><b>-&gt;</b><span>${target?.name}</span>${vote.weight > 1 ? `<em>x${vote.weight}</em>` : ""}
         </div>`;
       }).join("")}
     </div>
     <div class="voteTally">
-      ${[...tally.entries()].sort((a, b) => b[1] - a[1]).map(([id, total]) => `<div><b>${game.byId(id)?.name}</b><span>${total} vote${total === 1 ? "" : "s"}</span></div>`).join("")}
+      ${[...tally.entries()].sort((a, b) => b[1] - a[1]).map(([id, total]) => `<div><b>${id === "skip" ? "Skip" : game.byId(id)?.name}</b><span>${total} vote${total === 1 ? "" : "s"}</span></div>`).join("")}
     </div>
     <div class="eliminationBanner">${escapeHtml(result?.summary ?? "No vote result.")}</div>
   </section>`;

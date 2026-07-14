@@ -392,6 +392,20 @@ select, input[type="text"] {
 .meetingName {
   font-weight: 900;
 }
+.skipIcon {
+  width: 58px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed rgba(231, 184, 90, 0.6);
+  border-radius: 8px;
+  color: #f4d692;
+  font-size: 0.78rem;
+  font-weight: 950;
+}
+.skipTile {
+  background: linear-gradient(180deg, #1e2024, #13171c);
+}
 .meetingRole {
   min-height: 2.1em;
   color: var(--muted);
