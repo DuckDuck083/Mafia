@@ -1,0 +1,1500 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Midnight Verdict</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script>
+
+/* src/roles.js */
+const FACTIONS = {
+  TOWN: "Town",
+  SYNDICATE: "Syndicate",
+  NEUTRAL: "Neutral"
+};
+
+const ROLES = {
+  Citizen: {
+    faction: FACTIONS.TOWN,
+    team: "town",
+    description: "No power. Read the room, catch contradictions, and vote carefully.",
+    ability: null
+  },
+  Investigator: {
+    faction: FACTIONS.TOWN,
+    team: "town",
+    description: "Check one player each night for alignment clues.",
+    ability: "investigate",
+    priority: 20
+  },
+  Medic: {
+    faction: FACTIONS.TOWN,
+    team: "town",
+    description: "Protect one player each night from one attack.",
+    ability: "protect",
+    priority: 10
+  },
+  Guardian: {
+    faction: FACTIONS.TOWN,
+    team: "town",
+    description: "Guard a player. A successful save may reveal you.",
+    ability: "guard",
+    priority: 9
+  },
+  Tracker: {
+    faction: FACTIONS.TOWN,
+    team: "town",
+    description: "Follow one player at night and learn who they visited.",
+    ability: "track",
+    priority: 21
+  },
+  Vigilante: {
+    faction: FACTIONS.TOWN,
+    team: "town",
+    description: "Shoot at night. You have two shots and bad shots help the Syndicate.",
+    ability: "shoot",
+    priority: 30,
+    charges: 2
+  },
+  Mayor: {
+    faction: FACTIONS.TOWN,
+    team: "town",
+    description: "A town leader. Reveal during voting to make your vote count triple.",
+    ability: "revealMayor"
+  },
+  Boss: {
+    faction: FACTIONS.SYNDICATE,
+    team: "syndicate",
+    description: "Lead the Syndicate. You may appear innocent to weaker checks.",
+    ability: "command",
+    priority: 25
+  },
+  Enforcer: {
+    faction: FACTIONS.SYNDICATE,
+    team: "syndicate",
+    description: "Carry out the Syndicate elimination.",
+    ability: "kill",
+    priority: 26
+  },
+  Cleaner: {
+    faction: FACTIONS.SYNDICATE,
+    team: "syndicate",
+    description: "Clean a death to hide that player's role reveal.",
+    ability: "clean",
+    priority: 27,
+    charges: 2
+  },
+  Deceiver: {
+    faction: FACTIONS.SYNDICATE,
+    team: "syndicate",
+    description: "Plant false evidence and make another player look suspicious.",
+    ability: "frame",
+    priority: 8
+  },
+  Jester: {
+    faction: FACTIONS.NEUTRAL,
+    team: "jester",
+    description: "Win by getting voted out during the day.",
+    ability: null
+  },
+  Assassin: {
+    faction: FACTIONS.NEUTRAL,
+    team: "assassin",
+    description: "You have a personal target. Win only if your own assassination kills that target.",
+    ability: "assassinate",
+    priority: 29,
+    charges: 1
+  },
+  Survivor: {
+    faction: FACTIONS.NEUTRAL,
+    team: "survivor",
+    description: "Stay alive until the end. Vest at night up to three times.",
+    ability: "vest",
+    priority: 7,
+    charges: 3
+  }
+};
+
+function buildRoleDeck(size) {
+  const base = [
+    "Investigator",
+    "Medic",
+    "Tracker",
+    "Vigilante",
+    "Mayor",
+    "Boss",
+    "Enforcer",
+    "Cleaner",
+    "Deceiver",
+    "Jester",
+    "Assassin",
+    "Survivor"
+  ];
+  while (base.length < size) base.splice(1 + Math.floor(Math.random() * 4), 0, "Citizen");
+  return shuffle(base).slice(0, size);
+}
+
+function visibleRole(player) {
+  if (!player.dead) return "Hidden";
+  if (player.cleaned) return "Cleaned";
+  return player.role;
+}
+
+function shuffle(items) {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+
+/* src/players.js */
+
+const names = [
+  "Alex", "Blair", "Casey", "Devon", "Emery", "Finley", "Gray", "Harper",
+  "Indigo", "Jordan", "Kai", "Logan", "Morgan", "Noel", "Parker", "Quinn"
+];
+
+const personalities = [
+  { type: "Calm analyst", style: "measured", confidence: 0.62, intelligence: 0.86 },
+  { type: "Aggressive accuser", style: "sharp", confidence: 0.86, intelligence: 0.64 },
+  { type: "Funny troll", style: "joking", confidence: 0.74, intelligence: 0.52 },
+  { type: "Nervous liar", style: "nervous", confidence: 0.38, intelligence: 0.61 },
+  { type: "Quiet observer", style: "brief", confidence: 0.46, intelligence: 0.78 },
+  { type: "Overconfident player", style: "bold", confidence: 0.94, intelligence: 0.57 },
+  { type: "Manipulative strategist", style: "smooth", confidence: 0.78, intelligence: 0.91 },
+  { type: "Easily convinced player", style: "agreeable", confidence: 0.44, intelligence: 0.49 }
+];
+
+const colors = ["#e7b85a", "#64a9ff", "#62c98b", "#df5f65", "#b18cff", "#7dd3c7", "#f29b76", "#c6d36e"];
+
+function createPlayers(count) {
+  const deck = buildRoleDeck(count);
+  const pool = [...names].sort(() => Math.random() - 0.5);
+  return deck.map((role, index) => {
+    const isHuman = index === 0;
+    const personality = personalities[index % personalities.length];
+    return {
+      id: `p${index}`,
+      name: isHuman ? "You" : pool[index],
+      role,
+      faction: ROLES[role].faction,
+      team: ROLES[role].team,
+      ability: ROLES[role].ability,
+      charges: ROLES[role].charges ?? Infinity,
+      isHuman,
+      personality,
+      color: colors[index % colors.length],
+      alive: true,
+      dead: false,
+      protected: false,
+      guardedBy: null,
+      vested: false,
+      cleaned: false,
+      revealedMayor: false,
+      assassinSuccess: false,
+      target: null,
+      suspicion: {},
+      trust: {},
+      memories: [],
+      claims: [],
+      lastVote: null
+    };
+  });
+}
+
+function initializeRelationships(players) {
+  for (const p of players) {
+    for (const other of players) {
+      if (p.id === other.id) continue;
+      p.suspicion[other.id] = 20 + Math.round(Math.random() * 18);
+      p.trust[other.id] = 44 + Math.round(Math.random() * 18);
+      if (p.team === "syndicate" && other.team === "syndicate") {
+        p.suspicion[other.id] = 3;
+        p.trust[other.id] = 92;
+      }
+    }
+  }
+  const assassin = players.find((p) => p.role === "Assassin");
+  if (assassin) {
+    const possible = players.filter((p) => p.id !== assassin.id && p.team !== "syndicate");
+    assassin.target = possible[Math.floor(Math.random() * possible.length)]?.id ?? null;
+  }
+}
+
+
+/* src/ai.js */
+
+const suspiciousWords = ["suspicious", "sus", "changed", "lying", "fake", "vote", "kill", "guilty", "contradiction"];
+const defenseWords = ["trust", "innocent", "clear", "defend", "safe", "protected"];
+const roleAliases = {
+  sheriff: "Investigator",
+  cop: "Investigator",
+  detective: "Investigator",
+  investigator: "Investigator",
+  doc: "Medic",
+  doctor: "Medic",
+  medic: "Medic",
+  bodyguard: "Guardian",
+  guardian: "Guardian",
+  tracker: "Tracker",
+  vig: "Vigilante",
+  vigilante: "Vigilante",
+  mayor: "Mayor",
+  citizen: "Citizen"
+};
+
+function ingestPlayerMessage(game, text) {
+  const lower = text.toLowerCase();
+  const context = parsePlayerMessage(game, text);
+  for (const ai of game.living().filter((p) => !p.isHuman)) {
+    for (const target of context.mentioned) {
+      if (target.isHuman) continue;
+      const delta = context.kind === "accuse" ? 12 : context.kind === "defend" ? -8 : 2;
+      ai.suspicion[target.id] = clamp(ai.suspicion[target.id] + delta, 0, 100);
+      ai.memories.push(`${game.dayLabel()}: the player ${context.kind === "accuse" ? "pushed" : context.kind === "defend" ? "defended" : "mentioned"} ${target.name}.`);
+    }
+    if (context.claimedRole) {
+      game.human.claims.push({ day: game.day, role: context.claimedRole, text });
+      const believable = context.claimedRole === game.human.role || Math.random() < ai.personality.intelligence * 0.22;
+      ai.suspicion[game.human.id] = clamp(ai.suspicion[game.human.id] + (believable ? -5 : 8), 0, 100);
+      ai.memories.push(`${game.dayLabel()}: the player claimed ${context.claimedRole}.`);
+    } else if (suspiciousWords.some((w) => lower.includes(w))) {
+      ai.suspicion[game.human.id] = clamp(ai.suspicion[game.human.id] + 4, 0, 100);
+    }
+  }
+  return context;
+}
+
+function ingestSyndicateMessage(game, text) {
+  const lower = text.toLowerCase();
+  const mentioned = game.living().filter((p) => p.team !== "syndicate" && lower.includes(p.name.toLowerCase()));
+  const target = mentioned[0] ?? null;
+  let intent = "plan";
+  if (/\b(frame|make .* sus|suspicious)\b/.test(lower)) intent = "frame";
+  if (/\b(clean|hide)\b/.test(lower)) intent = "clean";
+  if (/\b(kill|hit|remove|attack)\b/.test(lower)) intent = "kill";
+  return { fromHuman: true, channel: "syndicate", text, lower, target, intent };
+}
+
+function aiNightAction(game, actor) {
+  if (!actor.alive || actor.isHuman || !actor.ability) return null;
+  const living = game.living().filter((p) => p.id !== actor.id);
+  const enemies = living.filter((p) => p.team !== actor.team);
+  const townish = living.filter((p) => p.team !== "syndicate");
+  const suspicious = mostSuspicious(actor, living);
+  const trusted = mostTrusted(actor, living);
+  const syndicateKillTarget = pickSyndicateKill(game, actor, townish);
+
+  if (actor.ability === "investigate") return action(actor, suspicious, "investigate");
+  if (actor.ability === "protect") return action(actor, actor.suspicion[actor.id] > 60 ? actor : trusted, "protect");
+  if (actor.ability === "guard") return action(actor, trusted, "guard");
+  if (actor.ability === "track") return action(actor, suspicious, "track");
+  if (actor.ability === "shoot" && actor.charges > 0 && actor.suspicion[suspicious.id] > 72) return action(actor, suspicious, "shoot");
+  if (actor.ability === "command") return action(actor, syndicateKillTarget, "command");
+  if (actor.ability === "kill") return action(actor, syndicateKillTarget, "kill");
+  if (actor.ability === "clean" && actor.charges > 0) return action(actor, syndicateKillTarget, "clean");
+  if (actor.ability === "frame") return action(actor, mostTrusted(actor, enemies), "frame");
+  if (actor.ability === "assassinate" && actor.charges > 0) {
+    const target = game.byId(actor.target);
+    if (target?.alive && (game.day > 2 || actor.suspicion[target.id] > 58)) return action(actor, target, "assassinate");
+  }
+  if (actor.ability === "vest" && actor.charges > 0 && averageSuspicionOf(game, actor) > 44) return action(actor, actor, "vest");
+  return null;
+}
+
+function generateDiscussion(game, count = 5, context = null) {
+  let speakers = game.living().filter((p) => !p.isHuman);
+  if (context?.mentioned?.length) {
+    const mentionedIds = new Set(context.mentioned.map((p) => p.id));
+    speakers = [
+      ...speakers.filter((p) => mentionedIds.has(p.id)),
+      ...speakers.filter((p) => !mentionedIds.has(p.id))
+    ];
+  } else {
+    speakers = speakers.sort(() => Math.random() - 0.5);
+  }
+  const results = [];
+  let thread = context;
+  for (const speaker of speakers.slice(0, count)) {
+    const text = speak(game, speaker, thread);
+    const target = inferTargetFromText(game, text);
+    results.push({ speaker, text });
+    thread = { fromBot: true, speaker, text, target, kind: target?.id === speaker.id ? "defense" : "case" };
+  }
+  return results;
+}
+
+function generateSyndicateDiscussion(game, context = null) {
+  const speakers = game.living().filter((p) => p.team === "syndicate" && !p.isHuman);
+  const town = game.living().filter((p) => p.team !== "syndicate");
+  if (!speakers.length || !town.length) return [];
+  const priority = rankKillTargets(game, speakers[0], town)[0];
+  const backup = rankKillTargets(game, speakers[0], town)[1] ?? priority;
+  const first = context?.target ?? priority;
+
+  return speakers.slice(0, 3).map((speaker, index) => {
+    if (context?.fromHuman) {
+      if (context.intent === "kill" && context.target) {
+        return { speaker, text: pick([
+          `${context.target.name} is workable. ${killReason(game, context.target)} I would still keep ${backup.name} as backup.`,
+          `I am good with ${context.target.name} if we think Medic is elsewhere. ${killReason(game, context.target)}`,
+          `${context.target.name} makes sense. If they survive, we push the save tomorrow.`
+        ]) };
+      }
+      if (context.intent === "frame" && context.target) {
+        return { speaker, text: pick([
+          `Frame ${context.target.name}, then we say their reactions have been off.`,
+          `That works. ${context.target.name} already has enough heat for a fake check to stick.`,
+          `I like framing ${context.target.name} more than killing them. Leave them alive and messy.`
+        ]) };
+      }
+      return { speaker, text: pick([
+        `Main priority is killing information roles. I have ${priority.name} highest.`,
+        `We should not waste the hit on someone getting voted tomorrow. ${priority.name} is cleaner.`,
+        `If nobody has a better read, I say ${priority.name}. ${killReason(game, priority)}`
+      ]) };
+    }
+    if (index === 0) return { speaker, text: `Priority kill is ${first.name}. ${killReason(game, first)}` };
+    if (index === 1) return { speaker, text: `I would avoid anyone already under heavy suspicion. ${backup.name} is quieter and more dangerous.` };
+    return { speaker, text: `If the hit fails, we claim the Medic saved correctly and push whoever defended ${first.name}.` };
+  });
+}
+
+function chooseVote(game, voter) {
+  if (!voter.alive) return null;
+  if (voter.isHuman) return null;
+  if (voter.role === "Jester") {
+    const loudest = game.living().filter((p) => p.id !== voter.id).sort((a, b) => (voter.trust[b.id] ?? 0) - (voter.trust[a.id] ?? 0))[0];
+    return loudest?.id ?? null;
+  }
+  if (voter.team === "syndicate") {
+    const heat = averageSuspicionOf(game, voter);
+    const teammateInDanger = game.living().find((p) => p.team === "syndicate" && p.id !== voter.id && averageSuspicionOf(game, p) > 58);
+    if (teammateInDanger && heat < 48 && Math.random() < 0.28) return teammateInDanger.id;
+    return mostSuspicious(voter, game.living().filter((p) => p.team !== "syndicate")).id;
+  }
+  return mostSuspicious(voter, game.living().filter((p) => p.id !== voter.id)).id;
+}
+
+function explainVote(game, voter, targetId) {
+  const target = game.byId(targetId);
+  if (!target) return "";
+  const reasons = evidenceFor(game, voter, target);
+  return stylize(voter, pick([
+    `I voted ${target.name}. ${reasons}`,
+    `My vote is on ${target.name}. ${reasons}`,
+    `${target.name} is my vote. ${reasons}`
+  ]));
+}
+
+function speak(game, speaker, context = null) {
+  if (context?.fromHuman) {
+    const direct = respondToPlayer(game, speaker, context);
+    if (direct) return stylize(speaker, direct);
+  }
+  if (context?.fromBot) {
+    const reply = respondToBot(game, speaker, context);
+    if (reply) return stylize(speaker, reply);
+  }
+
+  const living = game.living().filter((p) => p.id !== speaker.id);
+  const target = mostSuspicious(speaker, living);
+  const trusted = mostTrusted(speaker, living);
+  const heat = averageSuspicionOf(game, speaker);
+  const known = speaker.memories[speaker.memories.length - 1];
+  const evil = speaker.team === "syndicate";
+  const jester = speaker.role === "Jester";
+
+  if (jester && Math.random() < 0.45) return stylize(speaker, pick([
+    `Honestly, vote me if you want. I still think ${trusted.name} is getting a free pass.`,
+    `${target.name} feels off, but maybe I am just bad at this.`,
+    `I do not love how fast everyone moved on from me. That was weird.`
+  ]));
+  if (evil && heat > 52) return stylize(speaker, pick([
+    `This feels like an easy pile-on. Ask ${target.name} why they keep nudging it.`,
+    `I get why I look bad, but ${target.name} is using that to dodge questions.`,
+    `If I go out here, look at ${target.name} tomorrow.`
+  ]));
+  if (evil && Math.random() < 0.35) return stylize(speaker, pick([
+    `${trusted.name} sounds fine to me. I am more worried about ${target.name}.`,
+    `I would not vote ${trusted.name} today. ${target.name} has been way less direct.`,
+    `${target.name} is giving answers that sound prepared.`
+  ]));
+  if (speaker.role === "Investigator" && known?.includes("check")) return stylize(speaker, cleanMemory(known));
+  if (speaker.role === "Tracker" && known?.includes("visited")) return stylize(speaker, cleanMemory(known));
+  if (speaker.personality.intelligence > 0.8 && game.history.length) {
+    return stylize(speaker, pick([
+      `${target.name} is my best vote right now. ${evidenceFor(game, speaker, target)}`,
+      `I keep coming back to ${target.name}. ${evidenceFor(game, speaker, target)}`,
+      `Before we split votes, can ${target.name} answer one thing? ${evidenceFor(game, speaker, target)}`
+    ]));
+  }
+  if (speaker.personality.confidence < 0.48) return stylize(speaker, pick([
+    `I might be wrong, but ${target.name} made me nervous.`,
+    `Can ${target.name} explain their vote again? I did not like that.`,
+    `I am not ready to hard push it, but ${target.name} is not sitting right with me.`
+  ]));
+  return stylize(speaker, pick([
+    `I want to hear more from ${target.name}.`,
+    `${target.name}, who are your top two suspects?`,
+    `I trust ${trusted.name} a little more than ${target.name} right now.`,
+    `${target.name} has been around the vote but not really on it.`
+  ]));
+}
+
+function respondToBot(game, speaker, context) {
+  const target = context.target;
+  if (!target || target.dead || target.id === speaker.id) {
+    const accuser = context.speaker;
+    if (target?.id === speaker.id) {
+      return pick([
+        `That is not fair. The actual reason people suspect me is just one bad vote, not a real catch.`,
+        `You are leaving out that I pushed early yesterday. That does not make sense as Syndicate.`,
+        `If you think I am evil, say what team I am with and who my partner is.`
+      ]);
+    }
+    return null;
+  }
+  const mySuspicion = speaker.suspicion[target.id] ?? 30;
+  const accuser = context.speaker;
+  if (mySuspicion > 58) {
+    return pick([
+      `I agree on ${target.name}. ${evidenceFor(game, speaker, target)}`,
+      `That is where I am too. ${target.name} has not answered the vote issue.`,
+      `${accuser.name} is right about ${target.name}. The timeline around yesterday's vote is bad.`
+    ]);
+  }
+  if ((speaker.trust[target.id] ?? 45) > 58) {
+    const counter = mostSuspicious(speaker, game.living().filter((p) => p.id !== speaker.id && p.id !== target.id));
+    return pick([
+      `I do not like that push. ${target.name} has been consistent, but ${counter.name} keeps moving with the room.`,
+      `I would not vote ${target.name} yet. ${counter.name} has a worse record.`,
+      `That case skips over ${target.name}'s earlier read. I think ${counter.name} is more likely.`
+    ]);
+  }
+  return pick([
+    `Maybe, but I need ${target.name} to answer before I vote there.`,
+    `I see both sides. ${target.name}, explain the vote and the claim stuff.`,
+    `That is a decent point, but I do not want a lazy pile-on.`
+  ]);
+}
+
+function respondToPlayer(game, speaker, context) {
+  const target = context.mentioned.find((p) => p.id === speaker.id) ?? context.mentioned[0];
+  const claim = context.claimedRole;
+  const resultTarget = context.resultTarget ?? target;
+
+  if (claim) {
+    if (claim === "Investigator") {
+      if (context.result) {
+        if (resultTarget?.id === speaker.id) {
+          return pick([
+            `Nope. Your check on me is wrong, or you are fake claiming.`,
+            `That is not a real result on me. Say exactly what night you checked me.`,
+            `You are calling me ${context.result}, but that does not match anything I did.`
+          ]);
+        }
+        return pick([
+          `Okay, if you are Sheriff, give the full list of checks, not just ${resultTarget?.name}.`,
+          `That claim matters. Did anyone else get info on ${resultTarget?.name}?`,
+          `I can work with that, but Sheriff claims are easy to fake. Keep talking.`
+        ]);
+      }
+      return pick([
+        `If you are Sheriff, post your checks.`,
+        `Claiming Sheriff without results does not help. Who did you check?`,
+        `I am not voting around a bare Sheriff claim. Give names.`
+      ]);
+    }
+    return pick([
+      `Okay, you are claiming ${claim}. What did you do last night?`,
+      `${claim} claim noted. That buys you a little time, not a free pass.`,
+      `If that claim is real, your actions should line up with the nights.`
+    ]);
+  }
+
+  if (context.kind === "accuse" && target) {
+    if (target.id === speaker.id) {
+      return pick([
+        `You are pushing me, but your reason is thin. What exactly changed?`,
+        `That is a reach. I have been consistent today.`,
+        `If you want me out, give a real reason, not just vibes.`
+      ]);
+    }
+      return pick([
+        `I see the case on ${target.name}. ${evidenceFor(game, speaker, target)}`,
+        `${target.name} has been odd, yeah. The vote history is the part I care about.`,
+        `I am not fully there yet, but ${target.name} should answer why their read changed.`
+      ]);
+  }
+
+  if (context.kind === "defend" && target) {
+    return pick([
+      `Why are you clearing ${target.name}? What did they do that was towny?`,
+      `I do not hate that defense, but ${target.name} still needs to explain their vote.`,
+      `Maybe, but defending ${target.name} that hard makes me want details.`
+    ]);
+  }
+
+  if (context.kind === "question") {
+    return pick([
+      `My top suspect is ${mostSuspicious(speaker, game.living().filter((p) => p.id !== speaker.id)).name}.`,
+      `I would vote ${mostSuspicious(speaker, game.living().filter((p) => p.id !== speaker.id)).name} right now.`,
+      `I need more from the quiet people before I lock anything.`
+    ]);
+  }
+
+  if (context.mentioned.length) {
+    return pick([
+      `What are you seeing on ${context.mentioned[0].name}?`,
+      `${context.mentioned[0].name} has come up a lot. I want them to answer.`,
+      `I am listening, but I need a cleaner reason on ${context.mentioned[0].name}.`
+    ]);
+  }
+  return null;
+}
+
+function parsePlayerMessage(game, text) {
+  const lower = text.toLowerCase();
+  const mentioned = game.players.filter((p) => !p.isHuman && lower.includes(p.name.toLowerCase()));
+  const claimedRole = Object.entries(roleAliases).find(([alias]) => new RegExp(`\\b(i'?m|i am|claiming|claim)\\s+(the\\s+)?${alias}\\b`).test(lower))?.[1] ?? null;
+  const resultTarget = mentioned[0] ?? null;
+  let result = null;
+  if (/\b(sus|suspicious|evil|bad|guilty|syndicate)\b/.test(lower)) result = "suspicious";
+  if (/\b(inno|innocent|clear|safe|town)\b/.test(lower)) result = "innocent";
+  let kind = "statement";
+  if (claimedRole) kind = "claim";
+  else if (defenseWords.some((w) => lower.includes(w))) kind = "defend";
+  else if (suspiciousWords.some((w) => lower.includes(w)) || /\bvote\b/.test(lower)) kind = "accuse";
+  else if (text.includes("?")) kind = "question";
+  return { fromHuman: true, text, lower, kind, mentioned, claimedRole, resultTarget, result };
+}
+
+function evidenceFor(game, speaker, target) {
+  const claim = target.claims?.at(-1);
+  if (claim) return `${target.name} claimed ${claim.role}, so their nights need to line up.`;
+  const memories = speaker.memories.filter((m) => m.includes(target.name)).slice(-2);
+  if (memories.length) return cleanMemory(memories[memories.length - 1]);
+  const vote = game.history.findLast?.((h) => h.includes(`${target.name} voted`));
+  if (vote) return `${vote} That vote stood out to me.`;
+  const pushed = game.history.findLast?.((h) => h.includes(`the player pushed ${target.name}`));
+  if (pushed) return `${target.name} was already getting pushed earlier and never really answered it.`;
+  if (speaker.suspicion[target.id] > 70) return "Too many things point there.";
+  if (speaker.suspicion[target.id] > 52) return "Their story keeps shifting.";
+  return "It is mostly timing, but it is enough for me.";
+}
+
+function inferTargetFromText(game, text) {
+  return game.living().find((p) => !p.isHuman && text.includes(p.name)) ?? game.living().find((p) => text.includes(p.name)) ?? null;
+}
+
+function rankKillTargets(game, actor, candidates) {
+  return [...candidates].sort((a, b) => killScore(game, actor, b) - killScore(game, actor, a));
+}
+
+function killScore(game, actor, target) {
+  const power = ["Investigator", "Medic", "Tracker", "Guardian", "Vigilante"].includes(target.role) ? 30 : 0;
+  const trusted = actor.trust[target.id] ?? 45;
+  const heat = averageSuspicionOf(game, target);
+  return power + trusted - heat * 0.7;
+}
+
+function killReason(game, target) {
+  if (["Investigator", "Tracker"].includes(target.role)) return "They are the kind of slot that can produce hard info.";
+  if (["Medic", "Guardian"].includes(target.role)) return "Removing protection makes future nights easier.";
+  if ((averageSuspicionOf(game, target) ?? 0) < 35) return "They are too trusted to misvote later.";
+  return "They are unlikely to be voted out soon.";
+}
+
+function stylize(speaker, text) {
+  const style = speaker.personality.style;
+  if (style === "sharp") return `${text} Answer it straight.`;
+  if (style === "joking") return `${text} This meeting is already messy.`;
+  if (style === "nervous") return `Uh, ${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+  if (style === "brief") return text.split(".").slice(0, 2).join(".").trim() + ".";
+  if (style === "bold") return `${text} I am fine being first on that.`;
+  if (style === "smooth") return `${text} Let us not overcomplicate it.`;
+  if (style === "agreeable") return `${text} I can move if someone has better info.`;
+  return text;
+}
+
+function cleanMemory(memory) {
+  return memory
+    .replace(/^Day \d+: /, "")
+    .replace(/^my check says /, "My check says ")
+    .replace(/^I tracked /, "I tracked ");
+}
+
+function pick(items) {
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+function action(actor, target, type) {
+  if (!target) return null;
+  return { actorId: actor.id, targetId: target.id, type, priority: ROLES[actor.role].priority ?? 50 };
+}
+
+function pickSyndicateKill(game, actor, candidates) {
+  const power = candidates.filter((p) => ["Investigator", "Medic", "Tracker", "Guardian", "Vigilante"].includes(p.role));
+  const pool = power.length ? power : candidates;
+  return pool.sort((a, b) => (actor.trust[a.id] ?? 0) - (actor.trust[b.id] ?? 0))[0] ?? candidates[0];
+}
+
+function mostSuspicious(actor, players) {
+  return [...players].sort((a, b) => (actor.suspicion[b.id] ?? 0) - (actor.suspicion[a.id] ?? 0))[0] ?? players[0];
+}
+
+function mostTrusted(actor, players) {
+  return [...players].sort((a, b) => (actor.trust[b.id] ?? 0) - (actor.trust[a.id] ?? 0))[0] ?? players[0];
+}
+
+function averageSuspicionOf(game, target) {
+  const voters = game.living().filter((p) => p.id !== target.id);
+  return voters.reduce((sum, p) => sum + (p.suspicion[target.id] ?? 30), 0) / Math.max(1, voters.length);
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+
+/* src/nightActions.js */
+
+function collectNightActions(game, playerAction) {
+  const actions = [];
+  if (playerAction) actions.push(playerAction);
+  const humanDirectedKill = playerAction && ["kill", "command"].includes(playerAction.type);
+  let syndicateKillAdded = Boolean(humanDirectedKill);
+  for (const actor of game.players) {
+    const aiAction = aiNightAction(game, actor);
+    if (aiAction && ["kill", "command"].includes(aiAction.type)) {
+      if (syndicateKillAdded) continue;
+      syndicateKillAdded = true;
+    }
+    if (aiAction) actions.push(aiAction);
+  }
+  return actions.sort((a, b) => a.priority - b.priority);
+}
+
+function resolveNight(game, actions) {
+  const attacks = [];
+  const cleanedTargets = new Set();
+  const visits = new Map();
+  const morning = [];
+  const humanInfo = [];
+
+  for (const p of game.players) {
+    p.protected = false;
+    p.guardedBy = null;
+    p.vested = false;
+    p.framed = false;
+  }
+
+  for (const act of actions) {
+    const actor = game.byId(act.actorId);
+    const target = game.byId(act.targetId);
+    if (!actor?.alive || !target?.alive) continue;
+    visits.set(actor.id, target.id);
+    if (Number.isFinite(actor.charges) && ["shoot", "clean", "assassinate", "vest"].includes(act.type)) actor.charges -= 1;
+
+    if (act.type === "protect") target.protected = true;
+    if (act.type === "guard") target.guardedBy = actor.id;
+    if (act.type === "vest") target.vested = true;
+    if (act.type === "frame") target.framed = true;
+    if (act.type === "clean") cleanedTargets.add(target.id);
+    if (["kill", "shoot", "assassinate"].includes(act.type)) attacks.push(act);
+    if (act.type === "investigate") {
+      const suspicious = target.framed || (target.team === "syndicate" && target.role !== "Boss");
+      const clue = target.role === "Boss" ? `${target.name} appears organized but not openly criminal.` : `${target.name} reads as ${suspicious ? "suspicious" : "not suspicious"}.`;
+      remember(actor, `${game.dayLabel()}: my check says ${clue}`);
+      if (actor.isHuman) humanInfo.push(clue);
+    }
+    if (act.type === "track") {
+      const visited = visits.get(target.id);
+      const clue = visited ? `${target.name} visited ${game.byId(visited).name}.` : `${target.name} did not seem to visit anyone.`;
+      remember(actor, `${game.dayLabel()}: I tracked ${clue}`);
+      if (actor.isHuman) humanInfo.push(clue);
+    }
+  }
+
+  const dead = [];
+  for (const attack of attacks) {
+    const actor = game.byId(attack.actorId);
+    const target = game.byId(attack.targetId);
+    if (!actor?.alive || !target?.alive) continue;
+    if (target.protected || target.vested) {
+      morning.push(`${target.name} was attacked but survived.`);
+      raiseSuspicion(game, actor, 8);
+      continue;
+    }
+    if (target.guardedBy) {
+      const guardian = game.byId(target.guardedBy);
+      morning.push(`${target.name} was saved by a Guardian.`);
+      if (guardian) {
+        guardian.revealed = true;
+        remember(guardian, `${game.dayLabel()}: I saved ${target.name}.`);
+      }
+      raiseSuspicion(game, actor, 12);
+      continue;
+    }
+    kill(game, target, attack.type === "shoot" ? actor : null);
+    if (attack.type === "assassinate" && actor.role === "Assassin" && actor.target === target.id) {
+      actor.assassinSuccess = true;
+    }
+    if (cleanedTargets.has(target.id)) target.cleaned = true;
+    dead.push(target);
+  }
+
+  if (!dead.length && !morning.length) morning.push("The town wakes to an uneasy silence. No bodies were found.");
+  for (const body of dead) {
+    morning.push(`${body.name} died during the night. ${body.cleaned ? "Their role was cleaned." : `They were the ${body.role}.`}`);
+  }
+
+  for (const action of actions) {
+    const actor = game.byId(action.actorId);
+    const target = game.byId(action.targetId);
+    if (actor && target) remember(actor, `${game.dayLabel()}: I visited ${target.name}.`);
+  }
+
+  return { morning, humanInfo, dead, actions };
+}
+
+function kill(game, player, killer = null) {
+  player.alive = false;
+  player.dead = true;
+  if (killer?.team === "town" && player.team === "town") {
+    for (const ai of game.players.filter((p) => !p.isHuman)) {
+      ai.suspicion[killer.id] = Math.min(100, (ai.suspicion[killer.id] ?? 35) + 24);
+    }
+  }
+}
+
+function remember(player, memory) {
+  player.memories.push(memory);
+  if (player.memories.length > 24) player.memories.shift();
+}
+
+function raiseSuspicion(game, actor, amount) {
+  for (const p of game.players.filter((x) => !x.isHuman && x.id !== actor.id)) {
+    p.suspicion[actor.id] = Math.min(100, (p.suspicion[actor.id] ?? 25) + amount);
+  }
+}
+
+
+/* src/voting.js */
+
+function resolveVotes(game, humanVote) {
+  const votes = [];
+  for (const voter of game.living()) {
+    const targetId = voter.isHuman ? humanVote : game.pendingVotes?.[voter.id] ?? chooseVote(game, voter);
+    if (!targetId) continue;
+    voter.lastVote = targetId;
+    const weight = voter.role === "Mayor" && voter.revealedMayor ? 3 : 1;
+    votes.push({ voterId: voter.id, targetId, weight });
+    const target = game.byId(targetId);
+    if (target) {
+      game.history.push(`${voter.name} voted ${target.name}.`);
+      for (const ai of game.players.filter((p) => !p.isHuman && p.id !== voter.id)) {
+        if (target.team === ai.team && ai.team === "syndicate") ai.suspicion[voter.id] += 7;
+        ai.memories.push(`${game.dayLabel()}: ${voter.name} voted ${target.name}.`);
+      }
+    }
+  }
+
+  const tally = new Map();
+  for (const vote of votes) tally.set(vote.targetId, (tally.get(vote.targetId) ?? 0) + vote.weight);
+  const sorted = [...tally.entries()].sort((a, b) => b[1] - a[1]);
+  const [targetId, top] = sorted[0] ?? [];
+  const tied = sorted.filter(([, n]) => n === top);
+  const speeches = votes.filter((v) => !game.byId(v.voterId).isHuman).slice(0, 6).map((v) => ({
+    speaker: game.byId(v.voterId),
+    text: explainVote(game, game.byId(v.voterId), v.targetId)
+  }));
+
+  if (!targetId || tied.length > 1) {
+    game.history.push("The vote tied. No one was eliminated.");
+    return { eliminated: null, votes, speeches, summary: "The vote tied. No one was eliminated." };
+  }
+
+  const eliminated = game.byId(targetId);
+  kill(game, eliminated);
+  game.history.push(`${eliminated.name} was eliminated by vote. ${eliminated.cleaned ? "Their role was hidden." : `They were the ${eliminated.role}.`}`);
+  return {
+    eliminated,
+    votes,
+    speeches,
+    summary: `${eliminated.name} was eliminated by vote. ${eliminated.cleaned ? "Their role was hidden." : `They were the ${eliminated.role}.`}`
+  };
+}
+
+
+/* src/gameEngine.js */
+
+class GameEngine {
+  constructor(settings = {}) {
+    this.settings = { playerCount: 13, dayLength: 75, ...settings };
+    this.players = createPlayers(this.settings.playerCount);
+    initializeRelationships(this.players);
+    this.human = this.players[0];
+    this.phase = "reveal";
+    this.day = 1;
+    this.messages = [];
+    this.history = [];
+    this.lastNightActions = [];
+    this.lastNightResult = null;
+    this.lastVoteResult = null;
+    this.pendingVotes = {};
+    this.pendingAfterNightWinner = null;
+    this.pendingAfterVoteWinner = null;
+    this.spectating = false;
+    this.winner = null;
+    this.startedAt = Date.now();
+  }
+
+  living() {
+    return this.players.filter((p) => p.alive);
+  }
+
+  byId(id) {
+    return this.players.find((p) => p.id === id);
+  }
+
+  dayLabel() {
+    return `Day ${this.day}`;
+  }
+
+  addSystem(text) {
+    this.messages.push({ type: "system", text, at: Date.now() });
+  }
+
+  addMessage(speaker, text) {
+    this.messages.push({ type: speaker?.isHuman ? "me" : "ai", speakerId: speaker?.id, text, at: Date.now() });
+  }
+
+  addSyndicateMessage(speaker, text) {
+    this.messages.push({ type: speaker?.isHuman ? "me syndicate" : "ai syndicate", speakerId: speaker?.id, text, at: Date.now() });
+  }
+
+  start() {
+    this.phase = "night";
+    this.addSystem(`Your role is ${this.human.role}: ${ROLES[this.human.role].description}`);
+    this.addSystem("Night falls. Choose your action if your role has one.");
+    this.openSyndicateChat();
+  }
+
+  submitPlayerMessage(text) {
+    if (!text.trim() || this.spectating || !this.human.alive) return;
+    if (this.phase === "night" && this.human.team === "syndicate") {
+      this.addSyndicateMessage(this.human, text.trim());
+      const context = ingestSyndicateMessage(this, text.trim());
+      generateSyndicateDiscussion(this, context).forEach((r) => this.addSyndicateMessage(r.speaker, r.text));
+      return;
+    }
+    if (this.phase !== "day") return;
+    this.addMessage(this.human, text.trim());
+    const context = ingestPlayerMessage(this, text.trim());
+    const replies = generateDiscussion(this, 4, context);
+    replies.forEach((r) => this.addMessage(r.speaker, r.text));
+  }
+
+  resolveNightWith(playerAction) {
+    const actions = collectNightActions(this, playerAction);
+    this.lastNightActions = actions;
+    const result = resolveNight(this, actions);
+    this.lastNightResult = result;
+    result.morning.forEach((m) => this.addSystem(m));
+    result.humanInfo.forEach((m) => this.addSystem(`Private result: ${m}`));
+    const win = this.checkWin();
+    this.pendingAfterNightWinner = win;
+    this.phase = "nightResult";
+    return win;
+  }
+
+  advanceAfterNightResult() {
+    if (this.pendingAfterNightWinner) {
+      this.phase = "ended";
+      return;
+    }
+    this.phase = "day";
+    this.addSystem(`Day ${this.day} discussion begins.`);
+    generateDiscussion(this, 5).forEach((r) => this.addMessage(r.speaker, r.text));
+  }
+
+  goToVote() {
+    if (this.phase !== "day") return;
+    this.phase = "vote";
+    this.pendingVotes = {};
+    for (const voter of this.living().filter((p) => !p.isHuman)) {
+      this.pendingVotes[voter.id] = chooseVote(this, voter);
+      voter.lastVote = this.pendingVotes[voter.id];
+    }
+    this.addSystem("Voting begins. Choose someone to eliminate.");
+  }
+
+  revealMayor() {
+    if (this.human.role === "Mayor" && this.human.alive) {
+      this.human.revealedMayor = true;
+      this.addSystem("You reveal as Mayor. Your vote now counts as three.");
+    }
+  }
+
+  resolveVoteWith(targetId) {
+    const result = resolveVotes(this, targetId);
+    this.lastVoteResult = result;
+    result.speeches.forEach((s) => this.addMessage(s.speaker, s.text));
+    this.addSystem(result.summary);
+    const win = this.checkWin();
+    this.pendingAfterVoteWinner = win;
+    this.phase = "voteReveal";
+    return result;
+  }
+
+  advanceAfterVoteReveal() {
+    if (this.pendingAfterVoteWinner) {
+      this.phase = "ended";
+      return;
+    }
+    this.day += 1;
+    this.phase = "night";
+    this.pendingVotes = {};
+    this.addSystem(`Night ${this.day} begins.`);
+    this.openSyndicateChat();
+  }
+
+  openSyndicateChat() {
+    if (this.human.team !== "syndicate" || !this.human.alive) return;
+    const teammates = this.living().filter((p) => p.team === "syndicate" && p.id !== this.human.id);
+    if (!teammates.length) return;
+    this.addSystem(`Syndicate chat is open. Teammates: ${teammates.map((p) => p.name).join(", ")}.`);
+    generateSyndicateDiscussion(this).forEach((r) => this.addSyndicateMessage(r.speaker, r.text));
+  }
+
+  checkWin() {
+    const alive = this.living();
+    const syndicate = alive.filter((p) => p.team === "syndicate");
+    const town = alive.filter((p) => p.team === "town");
+    const nonSyndicate = alive.filter((p) => p.team !== "syndicate");
+    const jester = this.players.find((p) => p.role === "Jester");
+    const assassin = this.players.find((p) => p.role === "Assassin");
+    const survivor = this.players.find((p) => p.role === "Survivor");
+
+    if (jester?.dead && this.history.at(-1)?.includes(`${jester.name} was eliminated by vote`)) {
+      this.winner = { faction: "Jester", text: `${jester.name} wins by getting voted out.` };
+    } else if (assassin?.alive && assassin.assassinSuccess) {
+      this.winner = { faction: "Assassin", text: `${assassin.name} wins by personally assassinating their target.` };
+    } else if (syndicate.length >= nonSyndicate.length && syndicate.length > 0) {
+      this.winner = { faction: "Syndicate", text: "The Syndicate controls the vote and takes the town." };
+    } else if (syndicate.length === 0) {
+      const survivorText = survivor?.alive ? " The Survivor also lives to the end." : "";
+      this.winner = { faction: "Town", text: `Town eliminated every Syndicate member.${survivorText}` };
+    }
+    if (this.winner) this.phase = "ended";
+    return this.winner;
+  }
+}
+
+
+/* src/saveData.js */
+const KEY = "midnight-verdict-settings";
+
+function loadSettings() {
+  try {
+    return JSON.parse(localStorage.getItem(KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSettings(settings) {
+  localStorage.setItem(KEY, JSON.stringify(settings));
+}
+
+
+/* src/ui.js */
+
+const app = document.querySelector("#app");
+let game = null;
+let selectedActionTarget = null;
+let selectedVote = null;
+let deathAcknowledged = false;
+let timer = null;
+let revealTimer = null;
+let remaining = 0;
+
+function renderMenu() {
+  const settings = { playerCount: 13, dayLength: 75, ...loadSettings() };
+  app.innerHTML = `
+    <main class="screen">
+      <section class="menu">
+        <div class="titleBlock">
+          <h1>Midnight Verdict</h1>
+          <p class="subtitle">A hidden-role party game for one player against a table of scheming AI characters. Read the room, lie when needed, and survive the vote.</p>
+        </div>
+        <aside class="menuPanel">
+          <h2>New Match</h2>
+          <label class="settingRow">Players
+            <select id="playerCount">
+              ${[12, 13, 14, 15].map((n) => `<option value="${n}" ${settings.playerCount === n ? "selected" : ""}>${n} players</option>`).join("")}
+            </select>
+          </label>
+          <label class="settingRow">Discussion Timer
+            <select id="dayLength">
+              ${[45, 75, 105, 150].map((n) => `<option value="${n}" ${settings.dayLength === n ? "selected" : ""}>${n} seconds</option>`).join("")}
+            </select>
+          </label>
+          <button class="primary" id="startGame">Start Game</button>
+          <button id="tutorialBtn">Tutorial</button>
+          <div class="small">Every match reshuffles roles, personalities, trust, suspicion, targets, and night decisions.</div>
+        </aside>
+      </section>
+    </main>`;
+  document.querySelector("#startGame").addEventListener("click", () => {
+    const next = {
+      playerCount: Number(document.querySelector("#playerCount").value),
+      dayLength: Number(document.querySelector("#dayLength").value)
+    };
+    saveSettings(next);
+    game = new GameEngine(next);
+    deathAcknowledged = false;
+    renderReveal();
+  });
+  document.querySelector("#tutorialBtn").addEventListener("click", renderTutorial);
+}
+
+function renderTutorial() {
+  app.innerHTML = `
+    <main class="screen">
+      <section class="panel tutorial">
+        <h1>How to Play</h1>
+        <div class="tutorialGrid">
+          <div><h3>1. Learn Your Role</h3><p>Your card is secret. Town finds enemies, Syndicate lies and kills, Neutral roles have their own win conditions.</p></div>
+          <div><h3>2. Use Night Actions</h3><p>Power roles investigate, protect, track, frame, clean, or attack. Some results are private and some appear publicly in the morning.</p></div>
+          <div><h3>3. Talk During Day</h3><p>Type in chat. Bots react to names, accusations, defenses, claims, votes, and contradictions they remember from earlier rounds.</p></div>
+          <div><h3>4. Vote at Meeting</h3><p>The voting board shows every player. Living players get a Voted tag once their vote is locked. Pick a suspect and confirm.</p></div>
+          <div><h3>5. Win Conditions</h3><p>Town wins by removing the Syndicate. Syndicate wins by controlling the vote. Neutral roles can steal or share wins.</p></div>
+          <div><h3>6. If You Die</h3><p>Restart or spectate. Spectating shows conversations, night actions, votes, reveals, and the final winner.</p></div>
+        </div>
+        <button class="primary" id="tutorialBack">Back</button>
+      </section>
+    </main>`;
+  document.querySelector("#tutorialBack").addEventListener("click", renderMenu);
+}
+
+function renderReveal() {
+  const role = ROLES[game.human.role];
+  app.innerHTML = `
+    <main class="screen">
+      <section class="panel roleCard reveal winner">
+        <div class="faction">${role.faction}</div>
+        <div class="roleName">${game.human.role}</div>
+        <p>${role.description}</p>
+        ${game.human.role === "Assassin" ? `<p class="small">Your target is ${game.byId(game.human.target)?.name}.</p>` : ""}
+        <button class="primary" id="continue">Enter Night</button>
+      </section>
+    </main>`;
+  document.querySelector("#continue").addEventListener("click", () => {
+    game.start();
+    startTimer(999);
+    renderGame();
+  });
+}
+
+function renderGame() {
+  if (game.phase === "ended") return renderWinner();
+  if (!game.human.alive && !game.spectating && !deathAcknowledged && !["voteReveal", "nightResult"].includes(game.phase)) return renderDeath();
+
+  app.innerHTML = `
+    <main class="game">
+      <header class="topbar">
+        <div class="phase"><div class="moon ${game.phase === "day" || game.phase === "vote" ? "sun" : ""}"></div><div><div>${phaseTitle()}</div><div class="small">${statusLine()}</div></div></div>
+        <div class="timer" id="timer">${formatTime(remaining)}</div>
+        <div><button class="ghost" id="menuBtn">Main Menu</button></div>
+      </header>
+      <aside class="sidebar">
+        ${rolePanel()}
+        <section class="panel"><h3>Players</h3><div class="playerList">${playerList()}</div></section>
+      </aside>
+      <section class="center">
+        ${centerPanel()}
+        ${composer()}
+      </section>
+      <aside class="rightbar">
+        <section class="panel actions">${actionPanel()}</section>
+        <section class="panel votes">${votePanel()}</section>
+        <section class="panel"><h3>History</h3><div class="history">${historyPanel()}</div></section>
+      </aside>
+    </main>`;
+
+  bindGameEvents();
+  scheduleAutoAdvance();
+  const chat = document.querySelector("#chat");
+  if (chat) chat.scrollTop = chat.scrollHeight;
+}
+
+function centerPanel() {
+  if (game.phase === "vote") return meetingBoard();
+  if (game.phase === "voteReveal") return voteRevealBoard();
+  if (game.phase === "nightResult") return nightResultBoard();
+  return `<section class="panel chat" id="chat">${messages()}</section>`;
+}
+
+function rolePanel() {
+  const role = ROLES[game.human.role];
+  return `<section class="panel roleCard">
+    <div class="faction">${role.faction}</div>
+    <div class="roleName">${game.human.role}</div>
+    <p class="small">${role.description}</p>
+    ${Number.isFinite(game.human.charges) ? `<div class="small">Charges: ${game.human.charges}</div>` : ""}
+    ${game.human.role === "Assassin" ? `<div class="small">Target: ${game.byId(game.human.target)?.name}</div>` : ""}
+    ${game.spectating ? `<div class="small">Spectating. You cannot influence the match.</div>` : ""}
+  </section>`;
+}
+
+function playerList(targetMode = null) {
+  return game.players.map((p) => `
+    <div class="person ${p.dead ? "dead" : ""} ${targetMode && p.alive && p.id !== game.human.id ? "targetable" : ""} ${selectedActionTarget === p.id || selectedVote === p.id ? "selected" : ""}" data-player="${p.id}">
+      <div class="avatar" style="background:${p.color}">${p.name[0]}</div>
+      <div><div class="name">${p.name}</div><div class="meta">${p.isHuman ? "Player" : p.personality.type} - ${visibleRole(p)}</div></div>
+      <div class="statusPill">${p.alive ? "Alive" : "Dead"}</div>
+    </div>`).join("");
+}
+
+function messages() {
+  return game.messages.map((m) => {
+    const speaker = game.byId(m.speakerId);
+    return `<article class="msg ${m.type}">
+      ${speaker ? `<div class="speaker">${speaker.name}</div>` : ""}
+      <div class="bubble">${escapeHtml(m.text)}</div>
+    </article>`;
+  }).join("");
+}
+
+function composer() {
+  const canDayChat = game.phase === "day";
+  const canSyndicateChat = game.phase === "night" && game.human.team === "syndicate";
+  const disabled = (!canDayChat && !canSyndicateChat) || game.spectating || !game.human.alive;
+  const placeholder = canSyndicateChat ? "Syndicate chat: suggest a kill, frame, clean, or fake claim" : disabled ? "Chat is unavailable right now" : "Type to accuse, defend, claim, or bluff";
+  return `<form class="composer" id="composer">
+    <input type="text" id="chatInput" placeholder="${placeholder}" ${disabled ? "disabled" : ""} />
+    <button class="primary" ${disabled ? "disabled" : ""}>Send</button>
+  </form>`;
+}
+
+function actionPanel() {
+  if (game.phase === "nightResult") return `<h3>Night Ability</h3><p class="small">Actions are resolving. Read the morning report.</p>`;
+  if (game.phase !== "night") return `<h3>Night Ability</h3><p class="small">Night actions are available after voting resolves.</p>`;
+  if (game.spectating || !game.human.alive) {
+    return `<h3>Night Actions</h3><div class="small">${spectatorActions()}</div><button class="primary" id="autoNight">Resolve Night</button>`;
+  }
+  const ability = game.human.ability === "revealMayor" ? null : game.human.ability;
+  if (!ability || game.human.charges === 0) return `<h3>Night Ability</h3><p class="small">You have no available action tonight.</p><button class="primary" id="skipNight">Sleep</button>`;
+  const targets = game.living().filter((p) => ability === "vest" ? p.id === game.human.id : p.id !== game.human.id);
+  const target = selectedActionTarget ? game.byId(selectedActionTarget) : null;
+  return `<h3>Night Planner</h3><p class="small">${abilityCopy(ability)}</p>
+  ${target ? `<div class="nightPlan">Target: <b>${target.name}</b><br>${nightTargetHint(ability, target)}</div>` : ""}
+  <div class="actionGrid">
+    ${targets.map((p) => `<button data-action-target="${p.id}" class="${selectedActionTarget === p.id ? "primary" : ""}">${p.name}</button>`).join("")}
+  </div><button class="primary" id="confirmNight" ${selectedActionTarget ? "" : "disabled"}>Confirm</button>`;
+}
+
+function votePanel() {
+  if (game.phase === "day") return `<h3>Voting</h3><button class="primary" id="toVote">Start Vote</button>${game.human.role === "Mayor" && !game.human.revealedMayor && game.human.alive ? `<button id="revealMayor">Reveal Mayor</button>` : ""}`;
+  if (game.phase === "voteReveal") return `<h3>Voting</h3><p class="small">Votes are being revealed.</p>`;
+  if (game.phase !== "vote") return `<h3>Voting</h3><p class="small">No vote is active.</p>`;
+  const target = selectedVote ? game.byId(selectedVote) : null;
+  return `<h3>Voting</h3>
+    <p class="small">${target ? `Confirm or cancel on ${target.name}'s tile.` : "Choose a player on the meeting board."}</p>`;
+}
+
+function meetingBoard() {
+  return `<section class="panel meetingBoard">
+    <div class="meetingHeader">
+      <div><h2>Emergency Meeting</h2><div class="small">Pick a suspect. Voted tags show who has locked in, not who they voted for.</div></div>
+      <div class="meetingCount">${votedCount()}/${game.living().length} Voted</div>
+    </div>
+    <div class="meetingGrid">
+      ${game.players.map((p) => meetingTile(p)).join("")}
+    </div>
+  </section>`;
+}
+
+function meetingTile(p) {
+  const canVote = game.phase === "vote" && p.alive && !p.isHuman && !game.spectating && game.human.alive;
+  const voted = p.isHuman ? Boolean(selectedVote) : Boolean(p.lastVote);
+  const tag = p.dead ? "Dead" : voted ? p.isHuman ? "I Voted" : "Voted" : "Waiting";
+  const selected = selectedVote === p.id;
+  return `<div class="meetingTile ${p.dead ? "dead" : ""} ${selected ? "selected" : ""} ${canVote ? "clickable" : ""}" ${canVote ? `data-vote="${p.id}"` : ""}>
+    <div class="avatar meetingAvatar" style="background:${p.color}">${p.name[0]}</div>
+    <div class="meetingName">${p.name}</div>
+    <div class="meetingRole">${p.isHuman ? "You" : p.personality.type}</div>
+    ${selected ? `<div class="voteControls"><button class="confirmIcon" data-vote-confirm="${p.id}" title="Confirm vote">OK</button><button class="cancelIcon" data-vote-cancel title="Cancel vote">X</button></div>` : ""}
+    <div class="voteTag ${voted ? "done" : ""}">${tag}</div>
+  </div>`;
+}
+
+function voteRevealBoard() {
+  const result = game.lastVoteResult;
+  const rows = result?.votes ?? [];
+  const tally = new Map();
+  for (const vote of rows) tally.set(vote.targetId, (tally.get(vote.targetId) ?? 0) + vote.weight);
+  return `<section class="panel voteRevealBoard">
+    <div class="meetingHeader">
+      <div><h2>Votes Revealed</h2><div class="small">The table sees who voted for whom.</div></div>
+      <div class="meetingCount">Continuing...</div>
+    </div>
+    <div class="voteRevealList">
+      ${rows.map((vote) => {
+        const voter = game.byId(vote.voterId);
+        const target = game.byId(vote.targetId);
+        return `<div class="voteRevealRow">
+          <span>${voter?.name}</span><b>-&gt;</b><span>${target?.name}</span>${vote.weight > 1 ? `<em>x${vote.weight}</em>` : ""}
+        </div>`;
+      }).join("")}
+    </div>
+    <div class="voteTally">
+      ${[...tally.entries()].sort((a, b) => b[1] - a[1]).map(([id, total]) => `<div><b>${game.byId(id)?.name}</b><span>${total} vote${total === 1 ? "" : "s"}</span></div>`).join("")}
+    </div>
+    <div class="eliminationBanner">${escapeHtml(result?.summary ?? "No vote result.")}</div>
+  </section>`;
+}
+
+function nightResultBoard() {
+  const result = game.lastNightResult;
+  const publicLines = result?.morning ?? [];
+  const privateLines = result?.humanInfo ?? [];
+  return `<section class="panel nightResultBoard">
+    <div class="meetingHeader">
+      <div><h2>Morning Report</h2><div class="small">Night actions resolved by priority. Public information is shown first.</div></div>
+      <div class="meetingCount">Dawn</div>
+    </div>
+    <div class="nightReport">
+      ${publicLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}
+      ${privateLines.length ? `<h3>Private Results</h3>${privateLines.map((line) => `<div class="privateResult">${escapeHtml(line)}</div>`).join("")}` : ""}
+    </div>
+    <div class="nightActionSummary">
+      ${game.spectating ? spectatorActions() : "Hidden actions stay hidden unless you are spectating."}
+    </div>
+  </section>`;
+}
+
+function votedCount() {
+  return game.living().filter((p) => p.isHuman ? selectedVote : p.lastVote).length;
+}
+
+function bindGameEvents() {
+  document.querySelector("#menuBtn").addEventListener("click", () => {
+    clearInterval(timer);
+    renderMenu();
+  });
+  document.querySelector("#composer").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const input = document.querySelector("#chatInput");
+    game.submitPlayerMessage(input.value);
+    input.value = "";
+    renderGame();
+  });
+  document.querySelectorAll("[data-action-target]").forEach((btn) => btn.addEventListener("click", () => {
+    selectedActionTarget = btn.dataset.actionTarget;
+    renderGame();
+  }));
+  document.querySelector("#confirmNight")?.addEventListener("click", () => {
+    const action = buildHumanAction(selectedActionTarget);
+    selectedActionTarget = null;
+    game.resolveNightWith(action);
+    startTimer(4);
+    renderGame();
+  });
+  document.querySelector("#skipNight")?.addEventListener("click", () => {
+    game.resolveNightWith(null);
+    startTimer(4);
+    renderGame();
+  });
+  document.querySelector("#autoNight")?.addEventListener("click", () => {
+    game.resolveNightWith(null);
+    startTimer(4);
+    renderGame();
+  });
+  document.querySelector("#toVote")?.addEventListener("click", () => {
+    game.goToVote();
+    startTimer(45);
+    renderGame();
+  });
+  document.querySelector("#revealMayor")?.addEventListener("click", () => {
+    game.revealMayor();
+    renderGame();
+  });
+  document.querySelectorAll("[data-vote]").forEach((btn) => btn.addEventListener("click", () => {
+    selectedVote = btn.dataset.vote;
+    renderGame();
+  }));
+  document.querySelectorAll("[data-vote-confirm]").forEach((btn) => btn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    game.resolveVoteWith(btn.dataset.voteConfirm);
+    selectedVote = null;
+    selectedActionTarget = null;
+    startTimer(5);
+    renderGame();
+  }));
+  document.querySelectorAll("[data-vote-cancel]").forEach((btn) => btn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    selectedVote = null;
+    renderGame();
+  }));
+}
+
+function scheduleAutoAdvance() {
+  clearTimeout(revealTimer);
+  if (game.phase === "voteReveal") {
+    revealTimer = setTimeout(() => {
+      game.advanceAfterVoteReveal();
+      startTimer(game.phase === "night" ? 999 : 0);
+      renderGame();
+    }, 4700);
+  }
+  if (game.phase === "nightResult") {
+    revealTimer = setTimeout(() => {
+      game.advanceAfterNightResult();
+      startTimer(game.phase === "day" ? game.settings.dayLength : 0);
+      renderGame();
+    }, 4200);
+  }
+}
+
+function buildHumanAction(targetId) {
+  const role = ROLES[game.human.role];
+  if (!role.ability || !targetId) return null;
+  return { actorId: game.human.id, targetId, type: normalizeHumanAbility(role.ability), priority: role.priority ?? 50 };
+}
+
+function normalizeHumanAbility(ability) {
+  if (ability === "command") return "kill";
+  if (ability === "revealMayor") return null;
+  return ability;
+}
+
+function renderDeath() {
+  clearInterval(timer);
+  app.innerHTML = `<main class="screen"><section class="deathScreen">
+    <h1>You Died</h1>
+    <p>The table keeps talking after your chair goes cold.</p>
+    <button class="primary" id="restart">Restart Game</button>
+    <button id="spectate">Spectate</button>
+  </section></main>`;
+  document.querySelector("#restart").addEventListener("click", renderMenu);
+  document.querySelector("#spectate").addEventListener("click", () => {
+    deathAcknowledged = true;
+    game.spectating = true;
+    startTimer(game.phase === "day" ? game.settings.dayLength : 999);
+    renderGame();
+  });
+}
+
+function renderWinner() {
+  clearInterval(timer);
+  app.innerHTML = `<main class="screen"><section class="panel winner">
+    <h1>${game.winner.faction} Wins</h1>
+    <p>${game.winner.text}</p>
+    <div class="history">${game.players.map((p) => `${p.name}: ${p.role} (${p.alive ? "alive" : "dead"})`).join("<br>")}</div>
+    <button class="primary" id="restart">New Match</button>
+  </section></main>`;
+  document.querySelector("#restart").addEventListener("click", renderMenu);
+}
+
+function startTimer(seconds) {
+  clearInterval(timer);
+  remaining = seconds;
+  timer = setInterval(() => {
+    remaining = Math.max(0, remaining - 1);
+    const node = document.querySelector("#timer");
+    if (node) node.textContent = formatTime(remaining);
+    if (remaining === 0 && game?.phase === "day") {
+      game.goToVote();
+      startTimer(45);
+      renderGame();
+    }
+  }, 1000);
+}
+
+function phaseTitle() {
+  if (game.phase === "night") return `Night ${game.day}`;
+  if (game.phase === "nightResult") return `Night ${game.day} Results`;
+  if (game.phase === "day") return `Day ${game.day} Discussion`;
+  if (game.phase === "vote") return `Day ${game.day} Vote`;
+  if (game.phase === "voteReveal") return `Vote Reveal`;
+  return "Match";
+}
+
+function statusLine() {
+  const alive = game.living().length;
+  return `${alive}/${game.players.length} alive`;
+}
+
+function historyPanel() {
+  return game.history.slice(-18).map(escapeHtml).join("<br>") || "No public history yet.";
+}
+
+function spectatorActions() {
+  if (!game.lastNightActions.length) return "No actions have resolved yet.";
+  return game.lastNightActions.map((a) => `${game.byId(a.actorId)?.name} used ${a.type} on ${game.byId(a.targetId)?.name}`).join("<br>");
+}
+
+function abilityCopy(ability) {
+  const map = {
+    investigate: "Check a player for suspicious evidence.",
+    protect: "Prevent one attack against a player.",
+    guard: "Guard a player and potentially reveal yourself on a save.",
+    track: "Learn who your target visits tonight.",
+    shoot: "Shoot a player. You have limited shots.",
+    kill: "Choose the Syndicate elimination.",
+    command: "Choose the Syndicate elimination.",
+    clean: "Hide a target's role if they die tonight.",
+    frame: "Make a player look suspicious to investigations.",
+    assassinate: "Attempt to eliminate your personal target.",
+    vest: "Protect yourself for the night."
+  };
+  return map[ability] ?? "Choose a target.";
+}
+
+function nightTargetHint(ability, target) {
+  if (ability === "investigate") return `You will learn whether ${target.name} looks suspicious.`;
+  if (ability === "protect") return `You can stop one attack on ${target.name}.`;
+  if (ability === "guard") return `You may reveal yourself if ${target.name} is attacked.`;
+  if (ability === "track") return `You will learn who ${target.name} visits.`;
+  if (ability === "shoot") return `If ${target.name} is town, this will hurt your faction.`;
+  if (ability === "assassinate") return target.id === game.human.target ? "This is your target. A successful assassination wins." : "This is not your target.";
+  if (ability === "vest") return "You will protect yourself tonight.";
+  if (["kill", "command"].includes(ability)) return `The Syndicate will try to eliminate ${target.name}.`;
+  if (ability === "clean") return `If ${target.name} dies, their role can be hidden.`;
+  if (ability === "frame") return `${target.name} may look suspicious to checks.`;
+  return "This target will be used for your night action.";
+}
+
+function formatTime(seconds) {
+  if (seconds > 500) return "--:--";
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+
+/* src/main.js */
+
+renderMenu();
+
+    </script>
+  </body>
+</html>
