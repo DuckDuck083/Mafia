@@ -1290,7 +1290,7 @@ function renderTutorial() {
         <h1>How to Play</h1>
         <div class="tutorialGrid">
           <div><h3>1. Learn Your Role</h3><p>Your card is secret. Town finds enemies, Syndicate lies and kills, Neutral roles have their own win conditions.</p></div>
-          <div><h3>2. Use Night Actions</h3><p>Power roles investigate, protect, track, frame, clean, or attack. Some results are private and some appear publicly in the morning.</p></div>
+          <div><h3>2. Use Night Actions</h3><p>Power roles investigate, protect, track, frame, clean, or attack. Limited-use roles can save their ability instead of spending a charge.</p></div>
           <div><h3>3. Talk During Day</h3><p>Type in chat. Bots react to names, accusations, defenses, claims, votes, and contradictions they remember from earlier rounds.</p></div>
           <div><h3>4. Vote at Meeting</h3><p>The voting board shows every player. Living players get a Voted tag once their vote is locked. Pick a suspect and confirm.</p></div>
           <div><h3>5. Win Conditions</h3><p>Town wins by removing the Syndicate. Syndicate wins at parity with all non-mafia. Assassin wins if their target is voted out.</p></div>
@@ -1358,7 +1358,10 @@ function centerPanel() {
   if (game.phase === "vote") return meetingBoard();
   if (game.phase === "voteReveal") return voteRevealBoard();
   if (game.phase === "nightResult") return nightResultBoard();
-  return `<section class="panel chat" id="chat">${messages()}</section>`;
+  return `<section class="panel chatPanel">
+    <div class="notificationStack">${notifications()}</div>
+    <div class="chat" id="chat">${messages()}</div>
+  </section>`;
 }
 
 function rolePanel() {
@@ -1383,13 +1386,19 @@ function playerList(targetMode = null) {
 }
 
 function messages() {
-  return game.messages.map((m) => {
+  return game.messages.filter((m) => m.type !== "system").map((m) => {
     const speaker = game.byId(m.speakerId);
     return `<article class="msg ${m.type}">
       ${speaker ? `<div class="speaker">${speaker.name}</div>` : ""}
       <div class="bubble">${escapeHtml(m.text)}</div>
     </article>`;
   }).join("");
+}
+
+function notifications() {
+  const items = game.messages.filter((m) => m.type === "system").slice(-4);
+  if (!items.length) return "";
+  return items.map((m) => `<div class="notice">${escapeHtml(m.text)}</div>`).join("");
 }
 
 function composer() {
@@ -1413,11 +1422,14 @@ function actionPanel() {
   if (!ability || game.human.charges === 0) return `<h3>Night Ability</h3><p class="small">You have no available action tonight.</p><button class="primary" id="skipNight">Sleep</button>`;
   const targets = game.living().filter((p) => ability === "vest" ? p.id === game.human.id : p.id !== game.human.id);
   const target = selectedActionTarget ? game.byId(selectedActionTarget) : null;
+  const canSaveAbility = Number.isFinite(game.human.charges);
   return `<h3>Night Planner</h3><p class="small">${abilityCopy(ability)}</p>
   ${target ? `<div class="nightPlan">Target: <b>${target.name}</b><br>${nightTargetHint(ability, target)}</div>` : ""}
   <div class="actionGrid">
     ${targets.map((p) => `<button data-action-target="${p.id}" class="${selectedActionTarget === p.id ? "primary" : ""}">${p.name}</button>`).join("")}
-  </div><button class="primary" id="confirmNight" ${selectedActionTarget ? "" : "disabled"}>Confirm</button>`;
+  </div>
+  <button class="primary" id="confirmNight" ${selectedActionTarget ? "" : "disabled"}>Confirm</button>
+  ${canSaveAbility ? `<button id="saveAbility">Save Ability</button>` : ""}`;
 }
 
 function votePanel() {
@@ -1541,6 +1553,12 @@ function bindGameEvents() {
     renderGame();
   });
   document.querySelector("#skipNight")?.addEventListener("click", () => {
+    game.resolveNightWith(null);
+    startTimer(4);
+    renderGame();
+  });
+  document.querySelector("#saveAbility")?.addEventListener("click", () => {
+    selectedActionTarget = null;
     game.resolveNightWith(null);
     startTimer(4);
     renderGame();

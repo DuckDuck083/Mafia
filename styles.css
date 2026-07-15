@@ -215,12 +215,34 @@ select, input[type="text"] {
   grid-template-rows: minmax(0, 1fr) auto;
   gap: 0.75rem;
 }
+.chatPanel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.65rem;
+}
+.notificationStack {
+  display: grid;
+  gap: 0.4rem;
+  max-height: 150px;
+  overflow: auto;
+}
+.notice {
+  border: 1px solid rgba(231, 184, 90, 0.28);
+  border-radius: 8px;
+  background: rgba(231, 184, 90, 0.09);
+  color: #f4d692;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.84rem;
+  text-align: center;
+}
 .chat {
   min-height: 0;
   overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
+  padding-right: 0.2rem;
 }
 .msg {
   max-width: 82%;
@@ -234,8 +256,6 @@ select, input[type="text"] {
 }
 .msg.me { align-self: flex-end; }
 .msg.me .bubble { background: #182637; border-color: #31506f; }
-.msg.system { align-self: center; max-width: 95%; text-align: center; }
-.msg.system .bubble { background: rgba(231, 184, 90, 0.08); border-color: rgba(231, 184, 90, 0.28); color: #f4d692; }
 .msg.syndicate .bubble {
   background: rgba(223, 95, 101, 0.13);
   border-color: rgba(223, 95, 101, 0.38);
